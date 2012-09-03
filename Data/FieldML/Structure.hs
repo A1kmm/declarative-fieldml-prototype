@@ -13,7 +13,7 @@ newtype ScopedVariable = ScopedVariable Integer deriving (Eq, Ord, Show, Typeabl
 newtype UnitID = UnitID Integer deriving (Eq, Ord, Show, Typeable, Data)
 
 data SrcSpan = SrcSpan {
-    srcFile :: BS.ByteString,
+    srcFile :: String,
     srcStartRow :: Int,
     srcStartColumn :: Int,
     srcEndRow :: Int,
