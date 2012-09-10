@@ -29,11 +29,16 @@ data Model = Model {
   toplevelNamespace :: NamespaceID,             -- ^ The top-level namespace.
   allNamespaces :: M.Map NamespaceID Namespace, -- ^ All namespaces in the model.
   allNewDomains :: M.Map NewDomainID NewDomain, -- ^ All NewDomains in the model.
-  allDomainClasses :: M.Map NewDomainID DomainClass, -- ^ All domainclasses in the model.
+  allDomainClasses :: M.Map DomainClassID DomainClass, -- ^ All domainclasses in the model.
   allNamedValues :: M.Map NamedValueID NamedValue, -- ^ All NamedValues in the model.
   allUnits :: M.Map UnitID Unit,                 -- ^ All units in the model.
   instancePool :: M.Map (DomainClassID, [DomainType]) Instance, -- ^ All domain instance definitions.
-  modelAssertions :: [Expression]               -- ^ A list of assertions that hold in this model.
+  modelAssertions :: [Expression],              -- ^ A list of assertions that hold in this model.
+  modelForeignNamespaces :: M.Map (BS.ByteString, NamespaceID) NamespaceID, -- ^ Foreign => Local namespace map
+  modelForeignDomains :: M.Map (BS.ByteString, NewDomainID) NewDomainID, -- ^ Foreign => Local domain map
+  modelForeignDomainClasses :: M.Map (BS.ByteString, DomainClassID) DomainClassID, -- ^ Foreign => Local domain class map
+  modelForeignValues :: M.Map (BS.ByteString, NamedValueID) NamedValueID, -- ^ Foreign => Local named value map
+  modelForeignUnits :: M.Map (BS.ByteString, UnitID) UnitID -- ^ Foreign => Local units map
                    }
 
 data ELabel = ELabel { labelEnsemble :: NamespaceID,
