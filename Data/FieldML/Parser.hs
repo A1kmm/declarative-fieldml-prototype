@@ -146,18 +146,6 @@ importFromModel modelURL m ns (nsname:startWhere) whichSymbols hidingWhichSymbol
                       (BS.unpack nsname)
     Just ns' ->
       importFromModel modelURL m ns' startWhere whichSymbols hidingWhichSymbols
-  -- Find expressions involving at least one known named value. This can be a recursive
-  -- process, because expressions can bring in other expressions.
-  flip (untilM snd) (modelAssertions m, True) $ \remainingExpr -> do
-    let isKnownNamedValueRef (NamedValueRef _ nvid) = do
-          (srcurl, _, srcnvid) <- traceToSource allNamedValues modelURL m nvid
-          (isJust . M.lookup (srcurl, srcnvid)) <$> ((modelForeignValues . psModel) <$> getState)
-        isKnownNamedValueRef _ = return False
-    (newexpr, remaining') <- partitionM (\expr -> any <$> mapM isKnownNamedValueRef (universe expr)) remainingExpr
-    
-    return (remaining', not (null newexpr))
-  -- Find instances with a head and classes we have already seen...
-  instancePool m
 
 importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
   let ns = (allNamespaces m) ! nsID
@@ -171,14 +159,39 @@ importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
         Just l -> S.toList ((S.fromList allSyms) `S.difference` (S.fromList l))
         Nothing -> allSyms
 
+  -- Find expressions involving at least one known named value. This is an iterative
+  -- process, because expressions can bring in new named values.
+  flip (untilM snd) (modelAssertions m, True) $ \remainingExpr -> do
+    let isKnownNamedValueRef (NamedValueRef _ nvid) = do
+          (srcurl, _, srcnvid) <- traceToSource modelForeignValues modelURL m nvid
+          (isJust . M.lookup (srcurl, srcnvid)) <$> ((modelForeignValues . psModel) <$> getState)
+        isKnownNamedValueRef _ = return False
+    (newexpr, remaining') <- partitionM (\expr -> any id <$> mapM isKnownNamedValueRef (universe expr)) remainingExpr
+    newExprLocal <- ensureStructureLocal modelURL m newexpr
+    modifyState $ \st ->
+      st { psModel = (psModel st) { modelAssertions = newExprLocal ++ (modelAssertions (psModel st)) } }
+    return (remaining', not (null newexpr))
+
+  -- Find instances which reference a class and domains we have already seen...
+  forM_ (M.toList . instancePool m) $ \entry@((dcid, dtl), inst) -> do
+    (srcurl, _, srcdcid) <- traceToSource modelForeignDomainClasses modelURL m dcid
+    curmod <- psModel <$> getState
+    when ((srcurl, srcdcid) `M.member` (modelForeignDomainClasses curmod)) $
+      when (all id <$> (forM [d | UseNewDomain d <- universeBi dtl] $ \d -> do
+                           (srcurl, _, srcndid) <- traceToSource modelForeignDomains modelURL m d
+                           return ((srcurl, srcndid) `M.member` (modelForeignDomains curmod)))) $ do
+        (localHead, localInstance) <- ensureStructureLocal modelURL m entry
+        modifyState $ \st ->
+          st { psModel = (psModel st) { instancePool = M.insert localHead localInstance (instancePool (psModel st)) } }
+
 importSymbolFromModel modelURL m ns sym =
   case
-    (importOneNamespace modelURL m <$> tryFindNamespaceScoped m ns sym) `mplus`
-    (importOneDomain modelURL m <$> tryFindDomainScoped m ns sym) `mplus`
-    (importOneValue modelURL m <$> tryFindValueScoped m ns sym) `mplus`
-    (importOneClass modelURL m <$> tryFindClassScoped m ns sym) `mplus`
-    (importOneLabel modelURL m <$> tryFindLabelScoped m ns sym) `mplus`
-    (importOneUnit modelURL m <$> tryFindUnitScoped m ns sym)
+    (importOneNamespace modelURL m sym <$> tryFindNamespaceScoped m ns sym) `mplus`
+    (importOneDomain modelURL m sym <$> tryFindDomainScoped m ns sym) `mplus`
+    (importOneValue modelURL m sym <$> tryFindValueScoped m ns sym) `mplus`
+    (importOneClass modelURL m sym <$> tryFindClassScoped m ns sym) `mplus`
+    (importOneLabel modelURL m sym <$> tryFindLabelScoped m ns sym) `mplus`
+    (importOneUnit modelURL m sym <$> tryFindUnitScoped m ns sym)
   of
     Nothing -> fail $ "Attempt to import " ++ (BS.unpack sym) ++ " from " ++ (BS.unpack $ fromMaybe "self" modelURL) ++
                        " but the symbol could not be found"
@@ -216,35 +229,90 @@ ensureStructureLocalM foreignURL mForeign s =
   transformBiM (ensureNamedValueLocal foreignURL mForeign) =<<
   transformBiM (ensureUnitsLocal foreignURL mForeign) s
 
-ensureNamespaceLocal foreignURL' mForeign' foreignID' = do
-  (foreignURL, mForeign, foreignID) <- traceToSource modelForeignNamespaces foreignURL' mForeign' foreignID'
+ensureSomethingLocal modelForeignSomething allSomething nextID incrementNextID setAllSomething setForeignSomething foreignURL' mForeign' foreignID' = do
+  (foreignURL, mForeign, foreignID) <- traceToSource modelForeignSomething foreignURL' mForeign' foreignID'
   st <- getState
-  -- The namespace may be imported again from the foreign namespace, so trace it back to the source.
   let mLocal = psModel st
   case foreignURL of
     Nothing -> return foreignID
-    Just v -> case M.lookup foreignID (modelForeignNamespaces mLocal) of
+    Just v -> case M.lookup foreignID (modelForeignSomething mLocal) of
       Just lid -> return lid
       Nothing -> do
-        let nsData = (allNamespace mForeign) ! foreignID
-        let localID = nextNSID mLocal
-        putState (st { psModel = mLocal { nextNSID = (\NamespaceID n -> NamespaceID (n + 1)) localID } })
+        let nsData = (allSomething mForeign) ! foreignID
+        let localID = nextID mLocal
+        putState (st { psModel = incrementNextID mLocal })
         nsNewData <- ensureStructureLocalM foreignURL mForeign nsData
         st' <- getState
-        putState (st' { psModel = (psModel st') { allNamespaces = M.insert localID  nsNewData $ allNamespaces (psModel st'),
-                                                  modelForeignNamespaces = M.insert (foreignURL, foreignID) localID $
-                                                                             modelForeignNamespaces (psModel st')} })
+        putState (st' { psModel = ((psModel st') `setAllSomething` (M.insert localID  nsNewData $ allSomething (psModel st')))
+                                    `setForeignSomething` (M.insert (foreignURL, foreignID) localID $
+                                                           modelForeignSomething (psModel st')) } )
+        return localID
 
-importOneNamespace foreignURL mForeign foreignID = do
-  -- Step 1: ensure nsID is valid here...
-  mLocal' <- psModel <$> getState
-  (mLocal, localID) <- case foreignURL of
-        Nothing -> return (mLocal, foreignID)
-        Just v -> case M.lookup foreignID (modelForeignNamespaces mLocal) of
-          Just lid -> return (mLocal, lid)
-          Nothing -> do
-            
-  M.lookup (m ) nsID
+ensureNamespaceLocal = 
+  ensureSomethingLocal modelForeignNamespaces allNamespaces nextNSID
+    (\m v -> m { nextNSID = (\(NamespaceID n) -> NamespaceID (n+1)) (nextNSID m) })
+    (\m v -> m { allNamepsaces = v })
+    (\m v -> m { modelForeignNamepsaces = v })
+
+ensureDomainLocal = 
+  ensureSomethingLocal modelForeignDomains allNewDomains nextNewDomain
+    (\m v -> m { nextNewDomain = (\(NewDomainID n) -> NewDomainID (n+1)) (nextNewDomain m) })
+    (\m v -> m { allNewDomains = v })
+    (\m v -> m { modelForeignDomains = v })
+
+ensureDomainClassLocal = 
+  ensureSomethingLocal modelForeignDomainClasses allDomainClasses nextDomainClass
+    (\m v -> m { nextDomainClass = (\(DomainClassID n) -> DomainClassID (n+1)) (nextDomainClass m) })
+    (\m v -> m { allDomainClasses = v })
+    (\m v -> m { modelForeignDomainClasses = v })
+
+ensureNamedValueLocal =
+  ensureSomethingLocal modelForeignValues allNamedValues nextNamedValue
+    (\m v -> m { nextNamedValue = (\(NamedValueID n) -> NamedValueID (n+1)) (nextNamedValue m) })
+    (\m v -> m { allNamedValues = v })
+    (\m v -> m { modelForeignValues = v })
+
+ensureUnitsLocal =
+  ensureSomethingLocal modelForeignUnits allUnits nextUnit
+    (\m v -> m { nextUnit = (\(UnitID n) -> UnitID (n+1)) (nextUnit m) })
+    (\m v -> m { allUnits = v })
+    (\m v -> m { modelForeignUnits = v })
+
+importOneNamespace foreignURL mForeign sym foreignID = do
+  localID <- ensureNamespaceLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsNamespaces = M.insert sym localID (nsNamespaces ns)
+    }
+
+importOneDomain foreignURL mForeign sym foreignID = do
+  localID <- ensureDomainLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsDomains = M.insert sym localID (nsDomains ns)
+    }
+
+importOneValue foreignURL mForeign sym foreignID = do
+  localID <- ensureNamedValueLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsValues = M.insert sym localID (nsValues ns)
+    }
+
+importOneClass foreignURL mForeign sym foreignID = do
+  localID <- ensureDomainClassLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsClasses = M.insert sym localID (nsClasses ns)
+    }
+
+importOneLabel foreignURL mForeign sym (ELabel foreignID val) = do
+  localID <- ensureLabelLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsLabels = M.insert sym (ELabel localID val) (nsLabels ns)
+    }
+
+importOneUnit foreignURL mForeign sym foreignID = do
+  localID <- ensureUnitsLocal foreignURL mForeign foreignID
+  withCurrentNamespace $ \ns -> ns {
+      nsUnits = M.insert sym localID (nsUnits ns)
+    }
 
 withCurrentNamespace f = do
   st <- getState

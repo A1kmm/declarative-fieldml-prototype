@@ -32,6 +32,7 @@ initialModel = Model {
   nextNewDomain = NewDomainID reservedIDs,
   nextNamedValue = NamedValueID reservedIDs,
   nextDomainClass = DomainClassID reservedIDs,
+  nextUnit = UnitID reservedIDs,
   nextScopedVariable = ScopedVariable reservedIDs,
   -- The first non-reserved namespace is the toplevel one...
   toplevelNamespace = NamespaceID reservedIDs,

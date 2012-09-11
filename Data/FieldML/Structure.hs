@@ -25,6 +25,7 @@ data Model = Model {
   nextNewDomain :: NewDomainID,                 -- ^ The next NewDomainID to allocate.
   nextNamedValue :: NamedValueID,               -- ^ The next NamedValueID to allocate.
   nextDomainClass :: DomainClassID,             -- ^ The next DomainClassID to allocate.
+  nextUnit :: UnitID,                           -- ^ The next UnitID to allocate.
   nextScopedVariable :: ScopedVariable,         -- ^ The next ScopedVariable to allocate.
   toplevelNamespace :: NamespaceID,             -- ^ The top-level namespace.
   allNamespaces :: M.Map NamespaceID Namespace, -- ^ All namespaces in the model.

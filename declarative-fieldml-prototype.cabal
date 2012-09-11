@@ -1,0 +1,25 @@
+cabal-version:      >= 1.6
+build-type:         Simple
+name:               declarative-fieldml-prototype
+version:            0.0.1
+author:             Andrew Miller <ak.miller@auckland.ac.nz>
+maintainer:         Andrew Miller <ak.miller@auckland.ac.nz>
+copyright:          University of Auckland 2012
+homepage:           https://github.com/A1kmm/declarative-fieldml-prototype
+license:            BSD3
+license-file:       LICENSE
+synopsis:           A prototype for trying out ideas around a declarative FieldML with advanced features.
+category:           Mathematics
+description:
+  declarative-fieldml-prototype is a prototype for trying out ideas around a declarate FieldML with advanced features.
+
+source-repository head
+    type:     git
+    location: git@github.com:A1kmm/declarative-fieldml-prototype.git
+
+library
+  build-depends: base >=3 && <5, containers, uniplate, parsec, monads-tf, filepath, bytestring
+  exposed-modules:
+    Data.FieldML.Parser
+    Data.FieldML.Structure
+    Data.FieldML.InitialModel
