@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Data.FieldML.InitialModel (initialModel)
+module Data.FieldML.InitialModel (initialModel, blankNamespace, nsSpecial, nsMain, biSrcSpan)
 where
 
 import qualified Data.Map as M
-  
+import Data.FieldML.Structure  
+
 biSrcSpan = SrcSpan "built-in" 0 0 0 0
 
 -- We reserve IDs 0-99 of certain counters for builtin use.
@@ -16,9 +17,9 @@ nsInteger = NamespaceID 3     -- ^ Namespace 'Z', for integers.
 nsBoolean = NamespaceID 4     -- ^ Namespace 'Boolean', for booleans.
 nsMain = NamespaceID 5        -- ^ The top user-defined namespace.
 
-dNatural = DomainID 0
-dInteger = DomainID 1
-dBoolean = DomainID 2
+dNatural = NewDomainID 0
+dInteger = NewDomainID 1
+dBoolean = NewDomainID 2
 
 vFalse = NamedValueID 0
 vTrue = NamedValueID 1
@@ -44,9 +45,9 @@ initialModel = Model {
                                   ("N", nsNatural),
                                   ("Z", nsInteger),
                                   ("Boolean", nsBoolean)],
-       nsDomains = M.fromList [("N", dNatural),
-                               ("Z", dInteger),
-                               ("Boolean", dBoolean)],
+       nsDomains = M.fromList [("N", DomainType biSrcSpan (DomainHead []) . UseNewDomain $ dNatural),
+                               ("Z", DomainType biSrcSpan (DomainHead []) . UseNewDomain $ dInteger),
+                               ("Boolean", DomainType biSrcSpan (DomainHead []) . UseNewDomain $ dBoolean)],
        nsValues = M.fromList [("true", vTrue), ("false", vFalse)],
        nsClasses = M.fromList [],
        nsLabels = M.empty,
@@ -64,8 +65,8 @@ initialModel = Model {
           nsLabels = M.empty, -- Natural labels 0..inf are handled elsewhere.
           nsUnits = M.empty,
           nsParent = nsBuiltinMain,
-          nsNextLabel = 0, -- Infinitely many labels.
-        }),
+          nsNextLabel = 0 -- Infinitely many labels.
+          }),
     (nsInteger, Namespace {
           nsSrcSpan = biSrcSpan,
           nsNamespaces = M.empty,
@@ -90,10 +91,17 @@ initialModel = Model {
         }),
     (nsMain, blankNamespace biSrcSpan nsBuiltinMain)
                              ],
-  allNewDomains = M.fromList [(dNatural, BuiltinDomain), (dInteger, BuiltinDomain), (dBoolean, BuiltinDomain)],
+  allNewDomains = M.fromList [(dNatural, BuiltinDomain biSrcSpan),
+                              (dInteger, BuiltinDomain biSrcSpan),
+                              (dBoolean, BuiltinDomain biSrcSpan)],
   allDomainClasses = M.empty,
   allNamedValues = M.empty,
   allUnits = M.empty,
   instancePool = M.empty,
-  modelAssertions = []
+  modelAssertions = [],
+  modelForeignNamespaces = M.empty,
+  modelForeignDomains = M.empty,
+  modelForeignDomainClasses = M.empty,
+  modelForeignValues = M.empty,
+  modelForeignUnits = M.empty
   }

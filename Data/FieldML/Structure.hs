@@ -4,6 +4,8 @@ where
 
 import qualified Data.Map as M
 import qualified Data.ByteString.Char8 as BS
+import Data.Typeable
+import Data.Data
 
 newtype NamespaceID = NamespaceID Integer deriving (Eq, Ord, Show, Typeable, Data)
 newtype NewDomainID = NewDomainID Integer deriving (Eq, Ord, Show, Typeable, Data)
@@ -18,7 +20,13 @@ data SrcSpan = SrcSpan {
     srcStartColumn :: Int,
     srcEndRow :: Int,
     srcEndColumn :: Int
-  }
+  } deriving (Eq, Ord, Data, Typeable)
+instance Show SrcSpan where
+  show (SrcSpan sf sr sc er ec)
+    | sr==(-1) = sf
+    | sr==er && sc == ec = sf ++ (':':(show sr ++ ':':(show sc)))
+    | sr==er = sf ++ (':':(show sr ++ ':':(show sc))) ++ ('-':(show ec))
+    | otherwise = sf ++ (':':(show sr ++ ':':(show sc))) ++ (" to " ++ (show er ++ ':':(show ec)))
 
 data Model = Model {
   nextNSID :: NamespaceID,                      -- ^ The next NamespaceID to allocate.
@@ -40,14 +48,18 @@ data Model = Model {
   modelForeignDomainClasses :: M.Map (BS.ByteString, DomainClassID) DomainClassID, -- ^ Foreign => Local domain class map
   modelForeignValues :: M.Map (BS.ByteString, NamedValueID) NamedValueID, -- ^ Foreign => Local named value map
   modelForeignUnits :: M.Map (BS.ByteString, UnitID) UnitID -- ^ Foreign => Local units map
-                   }
+                   } deriving (Eq, Ord, Data, Show, Typeable)
 
 data ELabel = ELabel { labelEnsemble :: NamespaceID,
                        labelValue :: Integer
-                     }
+                     } deriving (Eq, Ord, Data, Show, Typeable)
 
-data NewDomain = CloneDomain CloneAnnotation DomainExpression | -- ^ Clone another domain.
-                 BuiltinDomain                                  -- ^ A built-in domain.
+data NewDomain = CloneDomain SrcSpan CloneAnnotation DomainExpression | -- ^ Clone another domain.
+                 BuiltinDomain SrcSpan                                  -- ^ A built-in domain.
+                 deriving (Eq, Ord, Data, Show, Typeable)
+domainSrcSpan :: NewDomain -> SrcSpan
+domainSrcSpan (CloneDomain ss _ _ ) = ss
+domainSrcSpan (BuiltinDomain ss) = ss
 
 -- | Clone annotation containss information which isn't always strictly needed
 --   interpret FieldML, but provides useful semantic information to some
@@ -55,6 +67,7 @@ data NewDomain = CloneDomain CloneAnnotation DomainExpression | -- ^ Clone anoth
 data CloneAnnotation = NormalClone |             -- ^ A straight clone.
                        SubsetClone Expression |  -- ^ Clone, taking subset. Expression must be a field from the original domain onto boolean.
                        ConnectClone [Expression] -- ^ Clone, changing connectivity. Expressions must be a field from the original domain onto some other domain.
+                       deriving (Eq, Ord, Data, Show, Typeable)
 
 data DomainExpression = UseNewDomain NewDomainID | -- ^ Refer to a defined domain
                         UseRealUnits UnitExpr | -- ^ Refer to a builtin Real with units domain.
@@ -65,12 +78,14 @@ data DomainExpression = UseNewDomain NewDomainID | -- ^ Refer to a defined domai
                         FieldSignature DomainExpression DomainExpression | -- ^ Field signature.
                         -- | Completely evaluate a domainfunction. Negative values reference class arguments.
                         EvaluateDomainFunction DomainClassID Int [DomainExpression]
+                        deriving (Eq, Ord, Data, Show, Typeable)
 
-data DomainType = DomainType SrcSpan DomainHead DomainExpression
-data DomainHead = DomainHead [DomainClassRelation]
+data DomainType = DomainType SrcSpan DomainHead DomainExpression deriving (Eq, Ord, Data, Show, Typeable)
+data DomainHead = DomainHead [DomainClassRelation] deriving (Eq, Ord, Data, Show, Typeable)
 data DomainClassRelation = DomainClassRelation DomainClassID [DomainExpression] |
                            DomainClassEqual DomainExpression DomainExpression |
                            DomainUnitConstraint UnitExpr -- ^ A units constraint on the domain.
+                           deriving (Eq, Ord, Data, Show, Typeable)
 
 data Namespace = Namespace {
   nsSrcSpan :: SrcSpan,
@@ -92,9 +107,10 @@ data Namespace = Namespace {
   -- | The number of label IDs assigned in this namespace.
   nsNextLabel :: Int
                            }
+               deriving (Eq, Ord, Data, Show, Typeable)
 
 -- | One entry for each parameter, parameter is ClassKind [] if it doesn't itself have parameters.
-data ClassKind = ClassKind [ClassKind]
+data ClassKind = ClassKind [ClassKind] deriving (Eq, Ord, Data, Show, Typeable)
 
 data DomainClass = DomainClass {
   classSrcSpan :: SrcSpan,
@@ -105,7 +121,7 @@ data DomainClass = DomainClass {
   classDomainFunctions :: M.Map BS.ByteString Int,
   -- | The values defined by instances of this class. ScopedVariables 0..(n-1) refer to the arguments.
   classValues :: M.Map BS.ByteString (Int, DomainExpression)
-  }
+  } deriving (Eq, Ord, Data, Show, Typeable)
 
 data Instance = Instance {
   instanceSrcSpan :: SrcSpan,
@@ -115,7 +131,7 @@ data Instance = Instance {
   instanceDomainFunctions :: M.Map Int DomainExpression,
   -- | Assertions involving any values in scope.
   instanceAssertions :: [Expression]
-  }
+  } deriving (Eq, Ord, Data, Show, Typeable)
 
 data NamedValue = NamedValue {
   namedValueSrcSpan :: SrcSpan,
@@ -124,6 +140,7 @@ data NamedValue = NamedValue {
   } | FFINamedValue { binvModule :: BS.ByteString, -- ^ The module containing the FFI value.
                       binvBase :: BS.ByteString    -- ^ The base name of the FFI value.
                     } -- ^ A foreign named value.
+                deriving (Eq, Ord, Data, Show, Typeable)
 
 data Expression = Apply SrcSpan Expression Expression | -- ^ Apply an expression to a field expression
                   NamedValueRef SrcSpan NamedValueID  | -- ^ Reference a named field.
@@ -139,6 +156,7 @@ data Expression = Apply SrcSpan Expression Expression | -- ^ Apply an expression
                   Case SrcSpan Expression (M.Map ELabel Expression) |
                   -- | Undefined is used to specify that the value of an expression is not known. It may be used as a placeholder for unknown parameters or fields that need to be solved for.
                   Undefined SrcSpan
+                deriving (Eq, Ord, Data, Show, Typeable)
 
 -- | Represents an expression on units.
 data UnitExpr = 
@@ -148,6 +166,8 @@ data UnitExpr =
   UnitPow SrcSpan UnitExpr Double |       -- ^ Raise a unit to a power. e.g. Pow second -1 = second^-1
   UnitScalarMup SrcSpan Double UnitExpr | -- ^ Multiply a unit by a scalar. E.g. ScalarMup 1E-3 metre = millimetre
   UnitScopedVar SrcSpan ScopedVariable    -- ^ Refer to a scoped variable.
-  
+  deriving (Eq, Ord, Data, Show, Typeable)
+
 -- | Represents a unit that has been defined.
-data Unit = NewBuiltinUnit            -- ^ Defines a new builtin unit.
+data Unit = NewBaseUnit { baseUnitSrcSpan :: SrcSpan }           -- ^ Defines a new builtin unit.
+              deriving (Eq, Ord, Data, Show, Typeable)

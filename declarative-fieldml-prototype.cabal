@@ -18,7 +18,7 @@ source-repository head
     location: git@github.com:A1kmm/declarative-fieldml-prototype.git
 
 library
-  build-depends: base >=3 && <5, containers, uniplate, parsec, monads-tf, filepath, bytestring
+  build-depends: base >=3 && <5, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl
   exposed-modules:
     Data.FieldML.Parser
     Data.FieldML.Structure

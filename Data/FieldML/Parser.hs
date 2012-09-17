@@ -1,19 +1,30 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings,ScopedTypeVariables #-}
 module Data.FieldML.Parser where
 
 import Data.FieldML.Structure
+import Data.FieldML.InitialModel
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.Map as M
+import qualified Data.Set as S
+import Data.Map ((!))
 import Text.Parsec.ByteString
+import Text.Parsec.Pos (SourcePos)
 import System.FilePath
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.Reader
-import Text.Parsec hiding ((<|>))
+import Text.Parsec hiding ((<|>),  many)
 import Control.Applicative
+import Data.IORef
+import Network.Curl
+import Data.Maybe
+import Data.Generics.Uniplate.Data
+import Data.Monoid
+import Data.Data
 
 data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString Model)) (ErrorT String IO) a }
 
-instance Monad (LookupModel a) where
+instance Monad LookupModel where
   return = LookupModel . return
   (LookupModel a) >>= f = LookupModel (a >>= liftM unlookupModel f)
   fail = LookupModel . lift . fail
@@ -22,13 +33,24 @@ data ParserState = ParserState {
     psSearchPaths :: [String],
     psModel :: Model,
     psCurrentNamespace :: NamespaceID,
-    psIndent :: Int
+    psIndent :: [Int]
   }
 
 type ModelParser a = ParsecT BS.ByteString ParserState LookupModel a
 
-justOrFail failWith Nothing = fail failWith
-justOrFail _ (Just x) = return x
+loadModel :: [String] -> String -> ErrorT String IO Model
+loadModel incl mpath = do
+  (r, v) <- lift $ curlGetString_ mpath []
+  if r == CurlOK
+    then do
+      mlist <- lift (newIORef M.empty)
+      flip runReaderT mlist $
+        unlookupModel $
+          (either (fail.show) return =<<
+                 runParserT modelParser (ParserState incl initialModel nsMain (repeat (-1)))
+                      mpath (v :: BS.ByteString))
+    else
+      fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
 
 lookupModel :: BS.ByteString -> ModelParser Model
 lookupModel modName = do
@@ -38,13 +60,13 @@ lookupModel modName = do
     Nothing -> do
       paths <- psSearchPaths <$> getState
       justOrFail ("Cannot find requested model " ++ BS.unpack modName) =<<
-        (liftM msum (seq (forM paths $ \path -> do
+        (liftM msum (forM paths $ \path -> do
           let mpath = path </> ((BS.unpack modName) ++ ".fieldml")
           (r, v) <- lift . LookupModel . lift . lift $ curlGetString_ mpath []
           if r == CurlOK
             then do
               st <- getState
-              pr <- runParserT modelParser (st { psModel = initialModel, psIndent = 0 }) mpath v
+              pr <- lift $ runParserT modelParser (st { psModel = initialModel, psIndent = repeat (-1) }) mpath v
               case pr of
                 Left err -> fail (show err ++ "\n")
                 Right m -> do
@@ -52,18 +74,20 @@ lookupModel modName = do
                   return (Just m)
             else
               return Nothing
-                         )))
+                         ))
 
 modelParser :: ModelParser Model
 modelParser = do
   namespaceContentsParser
   psModel <$> getState
 
-namespaceContentsParser = many $
-  importStatement <|> namespaceBlock
+namespaceContentsParser :: ModelParser ()
+namespaceContentsParser = (many $
+  importStatement <|> namespaceBlock) >> (return ())
 
+namespaceBlock :: ModelParser ()
 namespaceBlock = do
-  nsName <- (token "namespace" *> identifier <* token "where")
+  nsName <- (ftoken "namespace" *> identifier <* ftoken "where")
   parseNewNamespace nsName
   return ()
 
@@ -75,39 +99,75 @@ withNewNamespace name sp f = do
   let newNSID = nextNSID oldModel
   withCurrentNamespace $ \ns -> ns { nsNamespaces = M.insert name newNSID (nsNamespaces ns) }
   let newModel = oldModel {
-          nextNSID = (\NamespaceID n -> NamespaceID (n + 1)) newNSID,
+          nextNSID = (\(NamespaceID n) -> NamespaceID (n + 1)) newNSID,
           allNamespaces = M.insert newNSID (blankNamespace sp oldNSID) (allNamespaces oldModel)
         }
   putState $ st { psCurrentNamespace = newNSID, psModel = newModel }
-  f
+  r <- f
   st' <- getState
   putState $ st' { psCurrentNamespace = oldNSID }
-  return newNSID
+  return r
 
+parseNewNamespace :: BS.ByteString -> ModelParser ()
 parseNewNamespace name = do
   sp <- mkSrcPoint
-  withNewNamespace $ do
+  withNewNamespace name sp $ do
     blockBegin
     namespaceContentsParser
     blockEnd
     sp' <- finishSrcSpan sp
     withCurrentNamespace $ \ns -> ns { nsSrcSpan = sp' }
 
+unitsSrcSpan (UnitDimensionless ss) = ss
+unitsSrcSpan (UnitRef ss _) = ss
+unitsSrcSpan (UnitTimes ss _ _) = ss
+unitsSrcSpan (UnitPow ss _ _) = ss
+unitsSrcSpan (UnitScalarMup ss _ _) = ss
+unitsSrcSpan (UnitScopedVar ss _) = ss
+
+anyNamedValueSrcSpan (NamedValue ss _) = ss
+anyNamedValueSrcSpan (FFINamedValue {}) = biSrcSpan
+
+ensureIdentifierUnique :: BS.ByteString -> ModelParser ()
+ensureIdentifierUnique name = do
+  ns <- getCurrentNamespace
+  st <- getState
+  let curModel = psModel st
+  let r = (M.lookup name (nsNamespaces ns) >>= \ident ->
+            return ("namespace", nsSrcSpan $ (allNamespaces curModel)!ident)) `mplus`
+          (M.lookup name (nsDomains ns) >>= \(DomainType ss _ _) ->
+            return ("domain", ss)) `mplus`
+          (M.lookup name (nsValues ns) >>= \ident ->
+            return ("value", anyNamedValueSrcSpan $ (allNamedValues curModel)!ident)) `mplus`
+          (M.lookup name (nsClasses ns) >>= \ident ->
+            return ("class", classSrcSpan $ (allDomainClasses curModel)!ident)) `mplus`
+          (M.lookup name (nsLabels ns) >>= \ident ->
+            return ("label", nsSrcSpan $ (allNamespaces curModel)!(labelEnsemble ident))) `mplus`
+          (M.lookup name (nsUnits ns) >>= \u ->
+            return ("unit", unitsSrcSpan u))
+  case r of
+    Nothing -> return ()
+    Just (what, sp) -> fail $ "Attempt to redefine symbol " <> (BS.unpack name) <>
+                              " which has already been defined at line " <>
+                              (show sp) <> " as a " <> what
+
+importStatement :: ModelParser ()
 importStatement =
     doImport =<<
-        ((,,,,) <$> (token "import" *> blockBegin *>
-                     (optionMaybe (token "from" *> urlNoHash)))
+        ((,,,,) <$> (ftoken "import" *> blockBegin *>
+                     (optionMaybe (ftoken "from" *> urlNoHash)))
                 <*> pathSpec
                 <*> optionMaybe (tokenSep *> char '(' *>
                                  (identifier `sepBy` (char ',')) <*
                                  tokenSep <* char ')')
-                <*> optionMaybe (token "hiding" *>
+                <*> optionMaybe (ftoken "hiding" *>
                                  (tokenSep *> char '(' *>
                                   (identifier `sepBy` (char ',')) <*
                                   tokenSep <* char ')'))
-                <*> optionMaybe (token "as" *> identifier)
+                <*> optionMaybe (ftoken "as" *> identifier)
         ) <* blockEnd
 
+doImport :: (Maybe BS.ByteString, [BS.ByteString], Maybe [BS.ByteString], Maybe [BS.ByteString], Maybe BS.ByteString) -> ModelParser ()
 doImport (fromWhere, startWhere, whichSymbols, hidingWhichSymbols, Just asNamespace) = do
   ensureIdentifierUnique asNamespace
   sp <- mkSrcPoint
@@ -116,23 +176,24 @@ doImport (fromWhere, startWhere, whichSymbols, hidingWhichSymbols, Just asNamesp
 
 doImport (mu@(Just modelURL), startWhere, whichSymbols, hidingWhichSymbols, _) = do
   m <- lookupModel modelURL
-  let startWhere' = if not null startWhere && head startWhere == "::" then tail startWhere else startWhere
+  let startWhere' = if not (null startWhere) && head startWhere == "::" then tail startWhere else startWhere
   importFromModel mu m (toplevelNamespace m) startWhere' whichSymbols hidingWhichSymbols
   
 doImport (_, startWhere, whichSymbols, hidingWhichSymbols, _) = do
   st <- getState
-  let (ns, path) = if not null startWhere && head startWhere == "::" then
+  let (ns, path) = if not (null startWhere) && head startWhere == "::" then
                      (toplevelNamespace . psModel $ st, tail startWhere)
                    else
-                     (psCurrentNamespace ns, tail startWhere)
-  importFromModel modelURL (psModel st) (toplevelNamespace . psModel $ st) startWhere whichSymbols hidingWhichSymbols
+                     (psCurrentNamespace st, tail startWhere)
+  importFromModel Nothing (psModel st) (toplevelNamespace . psModel $ st) startWhere whichSymbols hidingWhichSymbols
 
-untilM p m v0
+untilM p v0 m
   | p v0 = do
     v <- m v0
-    untilM p m v
-  | otherwise = v0
+    untilM p v m
+  | otherwise = return v0
 
+partitionM :: Monad m => (a -> m Bool) -> [a] -> m ([a], [a])
 partitionM f v = partitionM' f v ([], [])
 partitionM' _ [] r = return r
 partitionM' f (h:t) (a, b) = do
@@ -140,18 +201,18 @@ partitionM' f (h:t) (a, b) = do
   let n = if r then (h:a, b) else (a, h:b)
   partitionM' f t n
 
-importFromModel modelURL m ns (nsname:startWhere) whichSymbols hidingWhichSymbols = do
+importFromModel modelURL m ns (nsname:startWhere) whichSymbols hidingWhichSymbols =
   case tryFindNamespaceScoped m ns nsname of
-    Nothing -> fail $ "Namespace at " ++ (show . nsSrcSpan $ (allNamespaces ns)!ns) ++ " has no child namespace " ++
+    Nothing -> fail $ "Namespace at " ++ (show . nsSrcSpan $ (allNamespaces m)!ns) ++ " has no child namespace " ++
                       (BS.unpack nsname)
     Just ns' ->
       importFromModel modelURL m ns' startWhere whichSymbols hidingWhichSymbols
 
 importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
   let ns = (allNamespaces m) ! nsID
-  let allSyms = concatMap (\f -> f ns) [keys . nsNamespaces, keys . nsDomains,
-                                        keys . nsValues, keys . nsClasses, keys . nsLabels,
-                                        keys . nsUnits]
+  let allSyms = concatMap (\f -> f ns) [M.keys . nsNamespaces, M.keys . nsDomains,
+                                        M.keys . nsValues, M.keys . nsClasses, M.keys . nsLabels,
+                                        M.keys . nsUnits]
   mapM_ (importSymbolFromModel modelURL m nsID) $
     case whichSymbols of
       Just l -> l
@@ -161,29 +222,39 @@ importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
 
   -- Find expressions involving at least one known named value. This is an iterative
   -- process, because expressions can bring in new named values.
-  flip (untilM snd) (modelAssertions m, True) $ \remainingExpr -> do
+  untilM snd (modelAssertions m, True) $ \(remainingExpr, _) -> do
     let isKnownNamedValueRef (NamedValueRef _ nvid) = do
-          (srcurl, _, srcnvid) <- traceToSource modelForeignValues modelURL m nvid
-          (isJust . M.lookup (srcurl, srcnvid)) <$> ((modelForeignValues . psModel) <$> getState)
+          (msrcurl, _, srcnvid) <- traceToSource modelForeignValues modelURL m nvid
+          case msrcurl of
+            Nothing -> return True
+            Just srcurl -> 
+              (isJust . M.lookup (srcurl, srcnvid)) <$> ((modelForeignValues . psModel) <$> getState)
         isKnownNamedValueRef _ = return False
-    (newexpr, remaining') <- partitionM (\expr -> any id <$> mapM isKnownNamedValueRef (universe expr)) remainingExpr
-    newExprLocal <- ensureStructureLocal modelURL m newexpr
+    (newexpr, remaining') <-
+      (partitionM :: (a -> ModelParser Bool) -> [a] -> (ModelParser ([a], [a]))) ((\expr -> ((any id) :: [Bool] -> Bool) <$> ((mapM isKnownNamedValueRef ((universeBi expr) :: [Expression])) :: ModelParser [Bool])) :: (Expression -> ModelParser Bool)) (remainingExpr :: [Expression])
+      
+    newExprLocal <- ensureStructureLocalM modelURL m newexpr
     modifyState $ \st ->
       st { psModel = (psModel st) { modelAssertions = newExprLocal ++ (modelAssertions (psModel st)) } }
     return (remaining', not (null newexpr))
 
   -- Find instances which reference a class and domains we have already seen...
-  forM_ (M.toList . instancePool m) $ \entry@((dcid, dtl), inst) -> do
-    (srcurl, _, srcdcid) <- traceToSource modelForeignDomainClasses modelURL m dcid
-    curmod <- psModel <$> getState
-    when ((srcurl, srcdcid) `M.member` (modelForeignDomainClasses curmod)) $
-      when (all id <$> (forM [d | UseNewDomain d <- universeBi dtl] $ \d -> do
-                           (srcurl, _, srcndid) <- traceToSource modelForeignDomains modelURL m d
-                           return ((srcurl, srcndid) `M.member` (modelForeignDomains curmod)))) $ do
-        (localHead, localInstance) <- ensureStructureLocal modelURL m entry
-        modifyState $ \st ->
-          st { psModel = (psModel st) { instancePool = M.insert localHead localInstance (instancePool (psModel st)) } }
+  forM_ (M.toList . instancePool $ m) $ \entry@((dcid, dtl), inst) -> do
+    (msrcurl, _, srcdcid) <- traceToSource modelForeignDomainClasses modelURL m dcid
+    case msrcurl of
+      Nothing -> return ()
+      Just srcurl -> do
+        curmod <- psModel <$> getState
+        when ((srcurl, srcdcid) `M.member` (modelForeignDomainClasses curmod)) $ do
+          areAllUsed <- all id <$> (forM [d | UseNewDomain d <- universeBi dtl] $ \d -> do
+                                       (Just srcurl, _, srcndid) <- traceToSource modelForeignDomains modelURL m d
+                                       return ((srcurl, srcndid) `M.member` (modelForeignDomains curmod)))
+          when areAllUsed $ do
+            (localHead, localInstance) <- ensureStructureLocalM modelURL m entry
+            modifyState $ \st ->
+              st { psModel = (psModel st) { instancePool = M.insert localHead localInstance (instancePool (psModel st)) } }
 
+importSymbolFromModel :: Maybe BS.ByteString -> Model -> NamespaceID -> BS.ByteString -> ModelParser ()
 importSymbolFromModel modelURL m ns sym =
   case
     (importOneNamespace modelURL m sym <$> tryFindNamespaceScoped m ns sym) `mplus`
@@ -195,7 +266,7 @@ importSymbolFromModel modelURL m ns sym =
   of
     Nothing -> fail $ "Attempt to import " ++ (BS.unpack sym) ++ " from " ++ (BS.unpack $ fromMaybe "self" modelURL) ++
                        " but the symbol could not be found"
-    Just v -> v
+    Just v -> return ()
 
 tryFindNamespaceScoped = tryFindSomethingScoped nsNamespaces
 tryFindDomainScoped = tryFindSomethingScoped nsDomains
@@ -210,18 +281,23 @@ tryFindSomethingScoped f m ns sym =
   in
    case M.lookup sym (f nsData) of
      Just something -> return something
-     Nothing -> if (nsParent nsData == nsSystem) then
+     Nothing -> if (nsParent nsData == nsSpecial) then
                   Nothing
                 else
                   tryFindSomethingScoped f m (nsParent nsData) sym
 
+traceToSource :: Eq b => (Model -> M.Map (BS.ByteString, b) b) -> Maybe BS.ByteString -> Model -> b -> ModelParser (Maybe BS.ByteString, Model, b)
 traceToSource f url model fid =
-  case lookup fid (flip (M.toList (f model))) of
-    Nothing -> return (url, model, fid)
-    Just (url', fid') -> do
-      model' <- lookupModel url'
-      return (url', model', fid')
+  case url of
+    Nothing -> return (Nothing, model, fid)
+    Just _ ->
+      case lookup fid (map (\(a,b)->(b, a)) (M.toList (f model))) of
+        Nothing -> return (url, model, fid)
+        Just (url', fid') -> do
+          model' <- lookupModel url'
+          return (Just url', model', fid')
 
+ensureStructureLocalM :: Data a => Maybe BS.ByteString -> Model -> a -> ModelParser a
 ensureStructureLocalM foreignURL mForeign s =
   transformBiM (ensureNamespaceLocal foreignURL mForeign) =<<
   transformBiM (ensureDomainLocal foreignURL mForeign) =<<
@@ -229,13 +305,18 @@ ensureStructureLocalM foreignURL mForeign s =
   transformBiM (ensureNamedValueLocal foreignURL mForeign) =<<
   transformBiM (ensureUnitsLocal foreignURL mForeign) s
 
+ensureSomethingLocal :: (Eq a, Ord a, Data b) =>
+                        (Model -> M.Map (BS.ByteString, a) a) -> (Model -> M.Map a b) -> (Model -> a) ->
+                        (Model -> Model) -> (Model -> M.Map a b -> Model) ->
+                        (Model -> M.Map (BS.ByteString, a) a -> Model) -> Maybe BS.ByteString -> Model -> a ->
+                        ModelParser a
 ensureSomethingLocal modelForeignSomething allSomething nextID incrementNextID setAllSomething setForeignSomething foreignURL' mForeign' foreignID' = do
   (foreignURL, mForeign, foreignID) <- traceToSource modelForeignSomething foreignURL' mForeign' foreignID'
   st <- getState
   let mLocal = psModel st
   case foreignURL of
     Nothing -> return foreignID
-    Just v -> case M.lookup foreignID (modelForeignSomething mLocal) of
+    Just v -> case M.lookup (v, foreignID) (modelForeignSomething mLocal) of
       Just lid -> return lid
       Nothing -> do
         let nsData = (allSomething mForeign) ! foreignID
@@ -244,37 +325,37 @@ ensureSomethingLocal modelForeignSomething allSomething nextID incrementNextID s
         nsNewData <- ensureStructureLocalM foreignURL mForeign nsData
         st' <- getState
         putState (st' { psModel = ((psModel st') `setAllSomething` (M.insert localID  nsNewData $ allSomething (psModel st')))
-                                    `setForeignSomething` (M.insert (foreignURL, foreignID) localID $
+                                    `setForeignSomething` (M.insert (v, foreignID) localID $
                                                            modelForeignSomething (psModel st')) } )
         return localID
 
-ensureNamespaceLocal = 
+ensureNamespaceLocal =
   ensureSomethingLocal modelForeignNamespaces allNamespaces nextNSID
-    (\m v -> m { nextNSID = (\(NamespaceID n) -> NamespaceID (n+1)) (nextNSID m) })
-    (\m v -> m { allNamepsaces = v })
-    (\m v -> m { modelForeignNamepsaces = v })
+    (\m -> m { nextNSID = (\(NamespaceID n) -> NamespaceID (n+1)) (nextNSID m) })
+    (\m v -> m { allNamespaces = v })
+    (\m v -> m { modelForeignNamespaces = v })
 
 ensureDomainLocal = 
   ensureSomethingLocal modelForeignDomains allNewDomains nextNewDomain
-    (\m v -> m { nextNewDomain = (\(NewDomainID n) -> NewDomainID (n+1)) (nextNewDomain m) })
+    (\m -> m { nextNewDomain = (\(NewDomainID n) -> NewDomainID (n+1)) (nextNewDomain m) })
     (\m v -> m { allNewDomains = v })
     (\m v -> m { modelForeignDomains = v })
 
 ensureDomainClassLocal = 
   ensureSomethingLocal modelForeignDomainClasses allDomainClasses nextDomainClass
-    (\m v -> m { nextDomainClass = (\(DomainClassID n) -> DomainClassID (n+1)) (nextDomainClass m) })
+    (\m -> m { nextDomainClass = (\(DomainClassID n) -> DomainClassID (n+1)) (nextDomainClass m) })
     (\m v -> m { allDomainClasses = v })
     (\m v -> m { modelForeignDomainClasses = v })
 
 ensureNamedValueLocal =
   ensureSomethingLocal modelForeignValues allNamedValues nextNamedValue
-    (\m v -> m { nextNamedValue = (\(NamedValueID n) -> NamedValueID (n+1)) (nextNamedValue m) })
+    (\m -> m { nextNamedValue = (\(NamedValueID n) -> NamedValueID (n+1)) (nextNamedValue m) })
     (\m v -> m { allNamedValues = v })
     (\m v -> m { modelForeignValues = v })
 
 ensureUnitsLocal =
   ensureSomethingLocal modelForeignUnits allUnits nextUnit
-    (\m v -> m { nextUnit = (\(UnitID n) -> UnitID (n+1)) (nextUnit m) })
+    (\m -> m { nextUnit = (\(UnitID n) -> UnitID (n+1)) (nextUnit m) })
     (\m v -> m { allUnits = v })
     (\m v -> m { modelForeignUnits = v })
 
@@ -284,10 +365,10 @@ importOneNamespace foreignURL mForeign sym foreignID = do
       nsNamespaces = M.insert sym localID (nsNamespaces ns)
     }
 
-importOneDomain foreignURL mForeign sym foreignID = do
-  localID <- ensureDomainLocal foreignURL mForeign foreignID
+importOneDomain foreignURL mForeign sym foreignDom = do
+  localDom <- ensureStructureLocalM foreignURL mForeign foreignDom
   withCurrentNamespace $ \ns -> ns {
-      nsDomains = M.insert sym localID (nsDomains ns)
+      nsDomains = M.insert sym localDom (nsDomains ns)
     }
 
 importOneValue foreignURL mForeign sym foreignID = do
@@ -303,17 +384,18 @@ importOneClass foreignURL mForeign sym foreignID = do
     }
 
 importOneLabel foreignURL mForeign sym (ELabel foreignID val) = do
-  localID <- ensureLabelLocal foreignURL mForeign foreignID
+  localID <- ensureNamespaceLocal foreignURL mForeign foreignID
   withCurrentNamespace $ \ns -> ns {
       nsLabels = M.insert sym (ELabel localID val) (nsLabels ns)
     }
 
-importOneUnit foreignURL mForeign sym foreignID = do
-  localID <- ensureUnitsLocal foreignURL mForeign foreignID
+importOneUnit foreignURL mForeign sym foreignUnits = do
+  localUnits <- ensureStructureLocalM foreignURL mForeign foreignUnits
   withCurrentNamespace $ \ns -> ns {
-      nsUnits = M.insert sym localID (nsUnits ns)
+      nsUnits = M.insert sym localUnits (nsUnits ns)
     }
 
+withCurrentNamespace :: (Namespace -> Namespace) -> ModelParser ()
 withCurrentNamespace f = do
   st <- getState
   let curModel = psModel st
@@ -323,53 +405,58 @@ withCurrentNamespace f = do
 
 getIndent = (head . psIndent) <$> getState
 
-commentLine = char '#' >> many (noneOf "\r\n") >> (oneOf "\r\n" <|> eof)
+getCurrentNamespace = do
+  st <- getState
+  let curModel = psModel st
+  return $ (allNamespaces curModel)!(psCurrentNamespace st)
 
 getColumn = sourceColumn <$> getPosition
 
+pathSpec = (string "::" *> (("::":) <$> relPathSpec)) <|> relPathSpec
+relPathSpec = sepBy (BS.pack <$> many (oneOf identChars)) (string "::") <*
+              lookAhead ((noneOf (':':identChars) *> pure ()) <|> eof)
+commentLine = char '#' >> many (noneOf "\r\n") >> ((oneOf "\r\n" *> pure ()) <|> eof)
+
+blockBegin :: ModelParser ()
 blockBegin = do
   oldind <- getIndent
-  many (commentLine <|> oneOf "\r\n ")
+  many (commentLine <|> (oneOf "\r\n " *> pure ()))
   l <- getColumn
   when (oldind >= l) . fail $ "Expected more than " ++ (show oldind) ++ " spaces at start of block."
   modifyState (\s -> s { psIndent = l:(psIndent s) })
   tokenSep
 
 tokenSep = try $ do
-  many (commentLine <|> oneOf "\r\n ")
+  many (commentLine <|> (oneOf "\r\n " *> pure ()))
   l <- getColumn
   ind <- getIndent
   when (l < ind) (fail $ "Expected at least " ++ (show l) ++ " spaces within block.")
-
+  
 blockEnd = try $ do
   i <- getIndent
-  many (commentLine <|> oneOf " \r\n")
+  many (commentLine <|> (oneOf " \r\n" *> pure ()))
   c <- getColumn
   when (c >= i) . fail $ "Expected line with indent of less than " ++ (show i) ++ " at end of block."
   modifyState (\s -> s { psIndent = tail (psIndent s) })
+  return ()
+
 identChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
-endToken = lookAhead (noneOf identChars <|> eof)
-token n = try (tokenSep *> string n *> endToken *> pure ())
+endToken = lookAhead ((noneOf identChars *> pure ()) <|> eof)
+ftoken n = try (tokenSep *> string n *> endToken)
 urlNoHash = tokenSep *> (BS.pack <$> many (noneOf " \t\r\n#"))
 identifier = BS.pack <$> many (oneOf identChars)
 
 mkSrcPoint = do
-  SourcePos sn l c <- getPosition
-  return $ SrcSpan sn l c l c
+  sp <- getPosition
+  return $ SrcSpan (sourceName sp) (sourceLine sp) (sourceColumn sp) (sourceLine sp) (sourceColumn sp)
 
-finishSrcSpan sp = do
-  let SrcSpan _ sr sc _ _ = sp
-  SourcePos _ er ec <- getPosition
-  return $ SrcSpan sn sr sc er ec
+finishSrcSpan (SrcSpan sn sl sc _ _) = do
+  sp2 <- getPosition
+  return $ SrcSpan sn sl sc (sourceLine sp2) (sourceColumn sp2)
 
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left v) = Left (f v)
 mapLeft _ (Right v) = Right v
 
-loadModel :: [String] -> String -> ErrorT String IO Model
-loadModel incl mpath = do
-  (r, v) <- lift $ curlGetString_ mpath []
-  if r == CurlOK then do
-      ErrorT . mapLeft show $ lift $ runParserT modelParser (ParserState incl initialModel nsMain (repeat (-1))) mpath (v :: BS.ByteString)
-    else
-      fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
+justOrFail failWith Nothing = fail failWith
+justOrFail _ (Just x) = return x
