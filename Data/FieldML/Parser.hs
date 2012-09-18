@@ -21,6 +21,7 @@ import Data.Maybe
 import Data.Generics.Uniplate.Data
 import Data.Monoid
 import Data.Data
+import qualified Debug.Trace
 
 data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString Model)) (ErrorT String IO) a }
 
@@ -66,9 +67,9 @@ lookupModel modName = do
           if r == CurlOK
             then do
               st <- getState
-              pr <- lift $ runParserT modelParser (st { psModel = initialModel, psIndent = repeat (-1) }) mpath v
+              pr <- lift $ runParserT modelParser (st { psCurrentNamespace = nsMain, psModel = initialModel, psIndent = repeat (-1) }) mpath v
               case pr of
-                Left err -> fail (show err ++ "\n")
+                Left err -> prettyFail (show err ++ "\n")
                 Right m -> do
                   (lift . LookupModel) $ ask >>= lift . lift . flip modifyIORef (M.insert modName m)
                   return (Just m)
@@ -78,6 +79,7 @@ lookupModel modName = do
 
 modelParser :: ModelParser Model
 modelParser = do
+  assertNSStateValid "modelParser entry"
   namespaceContentsParser
   psModel <$> getState
 
@@ -87,17 +89,20 @@ namespaceContentsParser = (many $
 
 namespaceBlock :: ModelParser ()
 namespaceBlock = do
+  assertNSStateValid "namespaceBlock entry"
   nsName <- (ftoken "namespace" *> identifier <* ftoken "where")
   parseNewNamespace nsName
-  return ()
+  assertNSStateValid "namespaceBlock leaving"
 
 withNewNamespace name sp f = do
   ensureIdentifierUnique name
-  st <- getState
-  let oldModel = psModel st
-  let oldNSID = psCurrentNamespace st
-  let newNSID = nextNSID oldModel
+  st' <- getState
+  let oldModel' = psModel st'
+  let newNSID = nextNSID oldModel'
   withCurrentNamespace $ \ns -> ns { nsNamespaces = M.insert name newNSID (nsNamespaces ns) }
+  st <- getState
+  let oldNSID = psCurrentNamespace st
+  let oldModel = psModel st
   let newModel = oldModel {
           nextNSID = (\(NamespaceID n) -> NamespaceID (n + 1)) newNSID,
           allNamespaces = M.insert newNSID (blankNamespace sp oldNSID) (allNamespaces oldModel)
@@ -113,10 +118,14 @@ parseNewNamespace name = do
   sp <- mkSrcPoint
   withNewNamespace name sp $ do
     blockBegin
+    assertNSStateValid "parseNewNamespace post blockBegin"
     namespaceContentsParser
+    assertNSStateValid "parseNewNamespace post namespaceParse"
     blockEnd
     sp' <- finishSrcSpan sp
     withCurrentNamespace $ \ns -> ns { nsSrcSpan = sp' }
+    assertNSStateValid "parseNewNamespace post srcspan finalise"
+  assertNSStateValid "parseNewNamespace post withNewNamespace"
 
 unitsSrcSpan (UnitDimensionless ss) = ss
 unitsSrcSpan (UnitRef ss _) = ss
@@ -147,25 +156,25 @@ ensureIdentifierUnique name = do
             return ("unit", unitsSrcSpan u))
   case r of
     Nothing -> return ()
-    Just (what, sp) -> fail $ "Attempt to redefine symbol " <> (BS.unpack name) <>
-                              " which has already been defined at line " <>
-                              (show sp) <> " as a " <> what
+    Just (what, sp) -> prettyFail $ "Attempt to redefine symbol " <> (BS.unpack name) <>
+                       " which has already been defined at line " <>
+                       (show sp) <> " as a " <> what
 
 importStatement :: ModelParser ()
 importStatement =
     doImport =<<
-        ((,,,,) <$> (ftoken "import" *> blockBegin *>
-                     (optionMaybe (ftoken "from" *> urlNoHash)))
-                <*> pathSpec
-                <*> optionMaybe (tokenSep *> char '(' *>
-                                 (identifier `sepBy` (char ',')) <*
-                                 tokenSep <* char ')')
-                <*> optionMaybe (ftoken "hiding" *>
-                                 (tokenSep *> char '(' *>
+        (((,,,,) <$> (ftoken "import" *> blockBegin *>
+                      (optionMaybe (ftoken "from" *> urlNoHash)))
+                 <*> pathSpec
+                 <*> optionMaybe (tokenSep *> char '(' *>
                                   (identifier `sepBy` (char ',')) <*
-                                  tokenSep <* char ')'))
-                <*> optionMaybe (ftoken "as" *> identifier)
-        ) <* blockEnd
+                                  tokenSep <* char ')')
+                 <*> optionMaybe (ftoken "hiding" *>
+                                  (tokenSep *> char '(' *>
+                                   (identifier `sepBy` (char ',')) <*
+                                   tokenSep <* char ')'))
+                 <*> optionMaybe (ftoken "as" *> identifier)
+         ) <* blockEnd)
 
 doImport :: (Maybe BS.ByteString, [BS.ByteString], Maybe [BS.ByteString], Maybe [BS.ByteString], Maybe BS.ByteString) -> ModelParser ()
 doImport (fromWhere, startWhere, whichSymbols, hidingWhichSymbols, Just asNamespace) = do
@@ -176,8 +185,9 @@ doImport (fromWhere, startWhere, whichSymbols, hidingWhichSymbols, Just asNamesp
 
 doImport (mu@(Just modelURL), startWhere, whichSymbols, hidingWhichSymbols, _) = do
   m <- lookupModel modelURL
+  st <- getState
   let startWhere' = if not (null startWhere) && head startWhere == "::" then tail startWhere else startWhere
-  importFromModel mu m (toplevelNamespace m) startWhere' whichSymbols hidingWhichSymbols
+  importFromModel mu m (toplevelNamespace . psModel $ st) startWhere' whichSymbols hidingWhichSymbols
   
 doImport (_, startWhere, whichSymbols, hidingWhichSymbols, _) = do
   st <- getState
@@ -201,19 +211,22 @@ partitionM' f (h:t) (a, b) = do
   let n = if r then (h:a, b) else (a, h:b)
   partitionM' f t n
 
-importFromModel modelURL m ns (nsname:startWhere) whichSymbols hidingWhichSymbols =
-  case tryFindNamespaceScoped m ns nsname of
-    Nothing -> fail $ "Namespace at " ++ (show . nsSrcSpan $ (allNamespaces m)!ns) ++ " has no child namespace " ++
-                      (BS.unpack nsname)
+importFromModel modelURL fromModel ns (nsname:startWhere) whichSymbols hidingWhichSymbols = do
+  intoModel <- psModel <$> getState
+  case tryFindNamespaceScoped fromModel ns nsname of
+    Nothing -> prettyFail $ "Namespace at " ++ (show . nsSrcSpan $ (allNamespaces fromModel)!ns) ++ " has no child namespace " ++
+               (BS.unpack nsname)
+               
     Just ns' ->
-      importFromModel modelURL m ns' startWhere whichSymbols hidingWhichSymbols
+      importFromModel modelURL fromModel ns' startWhere whichSymbols hidingWhichSymbols
 
-importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
-  let ns = (allNamespaces m) ! nsID
-  let allSyms = concatMap (\f -> f ns) [M.keys . nsNamespaces, M.keys . nsDomains,
-                                        M.keys . nsValues, M.keys . nsClasses, M.keys . nsLabels,
-                                        M.keys . nsUnits]
-  mapM_ (importSymbolFromModel modelURL m nsID) $
+importFromModel modelURL fromModel nsID [] whichSymbols hidingWhichSymbols = do
+  intoModel <- psModel <$> getState
+  let intoNS = (allNamespaces intoModel) ! nsID
+  let allSyms = concatMap (\f -> f intoNS) [M.keys . nsNamespaces, M.keys . nsDomains,
+                                            M.keys . nsValues, M.keys . nsClasses, M.keys . nsLabels,
+                                            M.keys . nsUnits]
+  mapM_ (importSymbolFromModel modelURL fromModel nsID) $
     case whichSymbols of
       Just l -> l
       Nothing -> case hidingWhichSymbols of
@@ -222,9 +235,9 @@ importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
 
   -- Find expressions involving at least one known named value. This is an iterative
   -- process, because expressions can bring in new named values.
-  untilM snd (modelAssertions m, True) $ \(remainingExpr, _) -> do
+  untilM snd (modelAssertions fromModel, True) $ \(remainingExpr, _) -> do
     let isKnownNamedValueRef (NamedValueRef _ nvid) = do
-          (msrcurl, _, srcnvid) <- traceToSource modelForeignValues modelURL m nvid
+          (msrcurl, _, srcnvid) <- traceToSource modelForeignValues modelURL fromModel nvid
           case msrcurl of
             Nothing -> return True
             Just srcurl -> 
@@ -233,24 +246,24 @@ importFromModel modelURL m nsID [] whichSymbols hidingWhichSymbols = do
     (newexpr, remaining') <-
       (partitionM :: (a -> ModelParser Bool) -> [a] -> (ModelParser ([a], [a]))) ((\expr -> ((any id) :: [Bool] -> Bool) <$> ((mapM isKnownNamedValueRef ((universeBi expr) :: [Expression])) :: ModelParser [Bool])) :: (Expression -> ModelParser Bool)) (remainingExpr :: [Expression])
       
-    newExprLocal <- ensureStructureLocalM modelURL m newexpr
+    newExprLocal <- ensureStructureLocalM modelURL fromModel newexpr
     modifyState $ \st ->
       st { psModel = (psModel st) { modelAssertions = newExprLocal ++ (modelAssertions (psModel st)) } }
     return (remaining', not (null newexpr))
 
   -- Find instances which reference a class and domains we have already seen...
-  forM_ (M.toList . instancePool $ m) $ \entry@((dcid, dtl), inst) -> do
-    (msrcurl, _, srcdcid) <- traceToSource modelForeignDomainClasses modelURL m dcid
+  forM_ (M.toList . instancePool $ fromModel) $ \entry@((dcid, dtl), inst) -> do
+    (msrcurl, _, srcdcid) <- traceToSource modelForeignDomainClasses modelURL fromModel dcid
     case msrcurl of
       Nothing -> return ()
       Just srcurl -> do
         curmod <- psModel <$> getState
         when ((srcurl, srcdcid) `M.member` (modelForeignDomainClasses curmod)) $ do
           areAllUsed <- all id <$> (forM [d | UseNewDomain d <- universeBi dtl] $ \d -> do
-                                       (Just srcurl, _, srcndid) <- traceToSource modelForeignDomains modelURL m d
+                                       (Just srcurl, _, srcndid) <- traceToSource modelForeignDomains modelURL fromModel d
                                        return ((srcurl, srcndid) `M.member` (modelForeignDomains curmod)))
           when areAllUsed $ do
-            (localHead, localInstance) <- ensureStructureLocalM modelURL m entry
+            (localHead, localInstance) <- ensureStructureLocalM modelURL fromModel entry
             modifyState $ \st ->
               st { psModel = (psModel st) { instancePool = M.insert localHead localInstance (instancePool (psModel st)) } }
 
@@ -264,9 +277,9 @@ importSymbolFromModel modelURL m ns sym =
     (importOneLabel modelURL m sym <$> tryFindLabelScoped m ns sym) `mplus`
     (importOneUnit modelURL m sym <$> tryFindUnitScoped m ns sym)
   of
-    Nothing -> fail $ "Attempt to import " ++ (BS.unpack sym) ++ " from " ++ (BS.unpack $ fromMaybe "self" modelURL) ++
-                       " but the symbol could not be found"
-    Just v -> return ()
+    Nothing -> prettyFail $ "Attempt to import " ++ (BS.unpack sym) ++ " from " ++ (BS.unpack $ fromMaybe "self" modelURL) ++
+                       " but the symbol could not be found: " ++ (show m)
+    Just v -> v >> return ()
 
 tryFindNamespaceScoped = tryFindSomethingScoped nsNamespaces
 tryFindDomainScoped = tryFindSomethingScoped nsDomains
@@ -405,6 +418,16 @@ withCurrentNamespace f = do
 
 getIndent = (head . psIndent) <$> getState
 
+assertNSStateValid wheremsg = do
+  st <- getState
+  let curModel = psModel st
+  case M.lookup (psCurrentNamespace st) (allNamespaces curModel) of
+    Nothing ->
+      error $
+        "assertNSStateValid - current namespace not in current model at " ++
+        wheremsg
+    Just _ -> return ()
+
 getCurrentNamespace = do
   st <- getState
   let curModel = psModel st
@@ -412,39 +435,41 @@ getCurrentNamespace = do
 
 getColumn = sourceColumn <$> getPosition
 
-pathSpec = (string "::" *> (("::":) <$> relPathSpec)) <|> relPathSpec
-relPathSpec = sepBy (BS.pack <$> many (oneOf identChars)) (string "::") <*
+pathSpec = tokenSep *> ((string "::" *> (("::":) <$> relPathSpec)) <|> relPathSpec)
+relPathSpec = sepBy (BS.pack <$> some (oneOf identChars)) (string "::") <*
               lookAhead ((noneOf (':':identChars) *> pure ()) <|> eof)
-commentLine = char '#' >> many (noneOf "\r\n") >> ((oneOf "\r\n" *> pure ()) <|> eof)
+commentLine = (char '#' *> many (noneOf "\r\n") *> (eof <|> (oneOf "\r\n" *> pure ()))) <?> "a comment"
 
 blockBegin :: ModelParser ()
 blockBegin = do
   oldind <- getIndent
-  many (commentLine <|> (oneOf "\r\n " *> pure ()))
+  many ((oneOf "\r\n " *> pure ()) <|> (commentLine <?> "bb"))
   l <- getColumn
-  when (oldind >= l) . fail $ "Expected more than " ++ (show oldind) ++ " spaces at start of block."
-  modifyState (\s -> s { psIndent = l:(psIndent s) })
-  tokenSep
+  ((do
+      when (oldind >= l) . fail $ "Expected more than " ++ (show oldind) ++ " spaces at start of block."
+      modifyState (\s -> s { psIndent = l:(psIndent s) })
+      tokenSep
+   ) <|> (pure ()))
 
 tokenSep = try $ do
-  many (commentLine <|> (oneOf "\r\n " *> pure ()))
+  many (((commentLine <?> "ts") <|> (oneOf "\r\n " *> pure ())) <?> "whitespace or comments between tokens")
   l <- getColumn
   ind <- getIndent
   when (l < ind) (fail $ "Expected at least " ++ (show l) ++ " spaces within block.")
   
-blockEnd = try $ do
+blockEnd = eof <|> (try $ do
   i <- getIndent
-  many (commentLine <|> (oneOf " \r\n" *> pure ()))
+  many (try ((oneOf " \r\n" *> pure ()) <|> commentLine))
   c <- getColumn
   when (c >= i) . fail $ "Expected line with indent of less than " ++ (show i) ++ " at end of block."
   modifyState (\s -> s { psIndent = tail (psIndent s) })
-  return ()
+  return ())
 
 identChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
 endToken = lookAhead ((noneOf identChars *> pure ()) <|> eof)
 ftoken n = try (tokenSep *> string n *> endToken)
-urlNoHash = tokenSep *> (BS.pack <$> many (noneOf " \t\r\n#"))
-identifier = BS.pack <$> many (oneOf identChars)
+urlNoHash = tokenSep *> (BS.pack <$> some (noneOf " \t\r\n#"))
+identifier = tokenSep *> (BS.pack <$> some (oneOf identChars))
 
 mkSrcPoint = do
   sp <- getPosition
@@ -458,5 +483,9 @@ mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left v) = Left (f v)
 mapLeft _ (Right v) = Right v
 
-justOrFail failWith Nothing = fail failWith
+justOrFail failWith Nothing = prettyFail failWith
 justOrFail _ (Just x) = return x
+
+prettyFail x = do
+  p <- getPosition
+  lift . fail $ x ++ "\n  at " ++ show p

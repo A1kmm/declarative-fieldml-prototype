@@ -36,7 +36,7 @@ initialModel = Model {
   nextUnit = UnitID reservedIDs,
   nextScopedVariable = ScopedVariable reservedIDs,
   -- The first non-reserved namespace is the toplevel one...
-  toplevelNamespace = NamespaceID reservedIDs,
+  toplevelNamespace = nsMain,
   allNamespaces = M.fromList [
     (nsBuiltinMain,
      Namespace {
