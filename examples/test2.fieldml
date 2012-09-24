@@ -1,1 +1,2 @@
 namespace yourns where
+import from test3 a::b (multiimportns)

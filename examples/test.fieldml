@@ -2,5 +2,5 @@ namespace myns where
   namespace testing where
     namespace myns where
     namespace xns where
-      import from test2 :: (yourns) as somens
+      import from test2 :: (yourns, multiimportns) as somens
       namespace anothertop where

@@ -21,7 +21,6 @@ import Data.Maybe
 import Data.Generics.Uniplate.Data
 import Data.Monoid
 import Data.Data
-import qualified Debug.Trace
 
 data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString Model)) (ErrorT String IO) a }
 
@@ -48,8 +47,8 @@ loadModel incl mpath = do
       flip runReaderT mlist $
         unlookupModel $
           (either (fail.show) return =<<
-                 runParserT modelParser (ParserState incl initialModel nsMain (repeat (-1)))
-                      mpath (v :: BS.ByteString))
+                 runParserT modelParser (ParserState incl initialModel nsMain (repeat 1))
+                 mpath (v :: BS.ByteString))
     else
       fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
 
@@ -67,7 +66,7 @@ lookupModel modName = do
           if r == CurlOK
             then do
               st <- getState
-              pr <- lift $ runParserT modelParser (st { psCurrentNamespace = nsMain, psModel = initialModel, psIndent = repeat (-1) }) mpath v
+              pr <- lift $ runParserT modelParser (st { psCurrentNamespace = nsMain, psModel = initialModel, psIndent = repeat 1 }) mpath v
               case pr of
                 Left err -> prettyFail (show err ++ "\n")
                 Right m -> do
@@ -318,7 +317,7 @@ ensureStructureLocalM foreignURL mForeign s =
   transformBiM (ensureNamedValueLocal foreignURL mForeign) =<<
   transformBiM (ensureUnitsLocal foreignURL mForeign) s
 
-ensureSomethingLocal :: (Eq a, Ord a, Data b) =>
+ensureSomethingLocal :: (Show a, Eq a, Ord a, Data b) =>
                         (Model -> M.Map (BS.ByteString, a) a) -> (Model -> M.Map a b) -> (Model -> a) ->
                         (Model -> Model) -> (Model -> M.Map a b -> Model) ->
                         (Model -> M.Map (BS.ByteString, a) a -> Model) -> Maybe BS.ByteString -> Model -> a ->
@@ -332,15 +331,19 @@ ensureSomethingLocal modelForeignSomething allSomething nextID incrementNextID s
     Just v -> case M.lookup (v, foreignID) (modelForeignSomething mLocal) of
       Just lid -> return lid
       Nothing -> do
-        let nsData = (allSomething mForeign) ! foreignID
-        let localID = nextID mLocal
-        putState (st { psModel = incrementNextID mLocal })
-        nsNewData <- ensureStructureLocalM foreignURL mForeign nsData
-        st' <- getState
-        putState (st' { psModel = ((psModel st') `setAllSomething` (M.insert localID  nsNewData $ allSomething (psModel st')))
-                                    `setForeignSomething` (M.insert (v, foreignID) localID $
-                                                           modelForeignSomething (psModel st')) } )
-        return localID
+        case (M.lookup foreignID (allSomething mForeign)) of
+          Nothing -> return foreignID -- This happens for builtins which are
+                                      -- implicitly defined everywhere, but not
+                                      -- actually explicitly defined.
+          Just nsData -> do
+            let localID = nextID mLocal
+            putState (st { psModel = incrementNextID mLocal })
+            nsNewData <- ensureStructureLocalM foreignURL mForeign nsData
+            st' <- getState
+            putState (st' { psModel = ((psModel st') `setAllSomething` (M.insert localID  nsNewData $ allSomething (psModel st')))
+                                      `setForeignSomething` (M.insert (v, foreignID) localID $
+                                                             modelForeignSomething (psModel st')) } )
+            return localID
 
 ensureNamespaceLocal =
   ensureSomethingLocal modelForeignNamespaces allNamespaces nextNSID
@@ -444,12 +447,11 @@ blockBegin :: ModelParser ()
 blockBegin = do
   oldind <- getIndent
   many ((oneOf "\r\n " *> pure ()) <|> (commentLine <?> "bb"))
-  l <- getColumn
-  ((do
-      when (oldind >= l) . fail $ "Expected more than " ++ (show oldind) ++ " spaces at start of block."
-      modifyState (\s -> s { psIndent = l:(psIndent s) })
-      tokenSep
-   ) <|> (pure ()))
+  lc <- getColumn
+  let l = if (oldind < lc) then lc else (oldind + 1)
+  when (oldind >= l) . fail $ "Expected more than " ++ (show oldind) ++ " spaces at start of block."
+  p <- getPosition
+  modifyState (\s -> s { psIndent = l:(psIndent s) })
 
 tokenSep = try $ do
   many (((commentLine <?> "ts") <|> (oneOf "\r\n " *> pure ())) <?> "whitespace or comments between tokens")
@@ -462,6 +464,7 @@ blockEnd = eof <|> (try $ do
   many (try ((oneOf " \r\n" *> pure ()) <|> commentLine))
   c <- getColumn
   when (c >= i) . fail $ "Expected line with indent of less than " ++ (show i) ++ " at end of block."
+  p <- getPosition
   modifyState (\s -> s { psIndent = tail (psIndent s) })
   return ())
 
