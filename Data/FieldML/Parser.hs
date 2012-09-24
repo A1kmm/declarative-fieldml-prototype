@@ -22,7 +22,10 @@ import Data.Generics.Uniplate.Data
 import Data.Monoid
 import Data.Data
 
-data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString Model)) (ErrorT String IO) a }
+-- Note: Models are cached in OrForward form, but should not actually contain any
+-- forward references. The reason for using OrForward form is to allow them to be
+-- easily transferred into the OrForward model being built.
+data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString (Model OrForward))) (ErrorT String IO) a }
 
 instance Monad LookupModel where
   return = LookupModel . return
@@ -31,28 +34,29 @@ instance Monad LookupModel where
 
 data ParserState = ParserState {
     psSearchPaths :: [String],
-    psModel :: Model,
+    psModel :: Model OrForward,
     psCurrentNamespace :: NamespaceID,
     psIndent :: [Int]
   }
 
 type ModelParser a = ParsecT BS.ByteString ParserState LookupModel a
 
-loadModel :: [String] -> String -> ErrorT String IO Model
+loadModel :: [String] -> String -> ErrorT String IO (Model NoForward)
 loadModel incl mpath = do
   (r, v) <- lift $ curlGetString_ mpath []
   if r == CurlOK
     then do
       mlist <- lift (newIORef M.empty)
-      flip runReaderT mlist $
-        unlookupModel $
-          (either (fail.show) return =<<
-                 runParserT modelParser (ParserState incl initialModel nsMain (repeat 1))
-                 mpath (v :: BS.ByteString))
+      mf <- flip runReaderT mlist $
+              unlookupModel $
+                (either (fail.show) return =<<
+                   runParserT modelParser (ParserState incl initialModel nsMain (repeat 1))
+                   mpath (v :: BS.ByteString))
+      ErrorT $ resolveForwardDefinitions mf
     else
       fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
 
-lookupModel :: BS.ByteString -> ModelParser Model
+lookupModel :: BS.ByteString -> ModelParser (Model OrForward)
 lookupModel modName = do
   cache <- (lift . LookupModel) (lift . lift . readIORef =<< ask)
   case M.lookup modName cache of
@@ -78,20 +82,44 @@ lookupModel modName = do
 
 modelParser :: ModelParser Model
 modelParser = do
-  assertNSStateValid "modelParser entry"
   namespaceContentsParser
   psModel <$> getState
 
 namespaceContentsParser :: ModelParser ()
 namespaceContentsParser = (many $
-  importStatement <|> namespaceBlock) >> (return ())
+  importStatement <|> namespaceBlock <|> domainBlock) >> (return ())
 
 namespaceBlock :: ModelParser ()
 namespaceBlock = do
-  assertNSStateValid "namespaceBlock entry"
   nsName <- (ftoken "namespace" *> identifier <* ftoken "where")
   parseNewNamespace nsName
-  assertNSStateValid "namespaceBlock leaving"
+
+domainBlock :: ModelParser ()
+domainBlock = do
+  sp <- mkSrcPoint
+  ident <- (ftoken "domain" *> identifier <* tokenSep <* char '=')
+  expr <- (do
+    (cloneAnnot, domExpr) <-
+      ((ftoken "clone" *> ((NormalClone,) <$> domainExpression)) <|>
+       (do
+           ftoken "subset"
+           dexpr <- domainExpression
+           ftoken "using"
+           sexpr <- anyExpression
+           return ((SubsetClone sexpr), dexpr)
+       ) <|>
+       (do
+           ftoken "connect"
+           dexpr <- domainExpression
+           ftoken "using"
+           sexpr <- anyExpression
+           return ((ConnectClone sexpr), dexpr)
+       ))
+    
+    sp' <- finishSrcSpan sp
+    
+    return $ CloneDomain sp' cloneAnnot domExpr
+          ) <|> domainExpression
 
 withNewNamespace name sp f = do
   ensureIdentifierUnique name
@@ -117,14 +145,10 @@ parseNewNamespace name = do
   sp <- mkSrcPoint
   withNewNamespace name sp $ do
     blockBegin
-    assertNSStateValid "parseNewNamespace post blockBegin"
     namespaceContentsParser
-    assertNSStateValid "parseNewNamespace post namespaceParse"
     blockEnd
     sp' <- finishSrcSpan sp
     withCurrentNamespace $ \ns -> ns { nsSrcSpan = sp' }
-    assertNSStateValid "parseNewNamespace post srcspan finalise"
-  assertNSStateValid "parseNewNamespace post withNewNamespace"
 
 unitsSrcSpan (UnitDimensionless ss) = ss
 unitsSrcSpan (UnitRef ss _) = ss
@@ -421,16 +445,6 @@ withCurrentNamespace f = do
 
 getIndent = (head . psIndent) <$> getState
 
-assertNSStateValid wheremsg = do
-  st <- getState
-  let curModel = psModel st
-  case M.lookup (psCurrentNamespace st) (allNamespaces curModel) of
-    Nothing ->
-      error $
-        "assertNSStateValid - current namespace not in current model at " ++
-        wheremsg
-    Just _ -> return ()
-
 getCurrentNamespace = do
   st <- getState
   let curModel = psModel st
@@ -485,6 +499,19 @@ finishSrcSpan (SrcSpan sn sl sc _ _) = do
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left v) = Left (f v)
 mapLeft _ (Right v) = Right v
+
+resolveForwardDefinitions :: Model OrForward -> Either String (Model NoForward)
+resolveForwardDefinitions m =
+  let
+    (err, m') = translateForwardDefinitions m
+  in
+   if null err then Right (unsafeOrForwardToNoForward m') else Left err
+
+unsafeOrForwardToNoForward :: Model OrForward -> Model NoForward
+unsafeOrForwardToNoForward = undefined
+
+translateForwardDefinitions :: Model OrForward -> (String, Model OrForward)
+translateForwardDefinitions = undefined
 
 justOrFail failWith Nothing = prettyFail failWith
 justOrFail _ (Just x) = return x
