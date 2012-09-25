@@ -28,4 +28,6 @@ library
   exposed-modules:
     Data.FieldML.Parser
     Data.FieldML.Structure
+    Data.FieldML.StructureForwardInstances
+    Data.FieldML.StructureNoForwardInstances
     Data.FieldML.InitialModel

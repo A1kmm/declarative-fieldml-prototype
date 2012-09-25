@@ -2,6 +2,8 @@
 module Data.FieldML.Parser where
 
 import Data.FieldML.Structure
+import Data.FieldML.StructureForwardInstances
+import Data.FieldML.StructureNoForwardInstances
 import Data.FieldML.InitialModel
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Map as M
@@ -22,10 +24,10 @@ import Data.Generics.Uniplate.Data
 import Data.Monoid
 import Data.Data
 
--- Note: Models are cached in OrForward form, but should not actually contain any
--- forward references. The reason for using OrForward form is to allow them to be
--- easily transferred into the OrForward model being built.
-data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString (Model OrForward))) (ErrorT String IO) a }
+-- Note: Models are cached in ForwardPossible form, but should not actually contain any
+-- forward references. The reason for using ForwardPossible form is to allow them to be
+-- easily transferred into the ForwardPossible model being built.
+data LookupModel a = LookupModel { unlookupModel :: ReaderT (IORef (M.Map BS.ByteString (Model ForwardPossible))) (ErrorT String IO) a }
 
 instance Monad LookupModel where
   return = LookupModel . return
@@ -34,14 +36,14 @@ instance Monad LookupModel where
 
 data ParserState = ParserState {
     psSearchPaths :: [String],
-    psModel :: Model OrForward,
+    psModel :: Model ForwardPossible,
     psCurrentNamespace :: NamespaceID,
     psIndent :: [Int]
   }
 
 type ModelParser a = ParsecT BS.ByteString ParserState LookupModel a
 
-loadModel :: [String] -> String -> ErrorT String IO (Model NoForward)
+loadModel :: [String] -> String -> ErrorT String IO (Model ())
 loadModel incl mpath = do
   (r, v) <- lift $ curlGetString_ mpath []
   if r == CurlOK
@@ -56,7 +58,7 @@ loadModel incl mpath = do
     else
       fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
 
-lookupModel :: BS.ByteString -> ModelParser (Model OrForward)
+lookupModel :: BS.ByteString -> ModelParser (Model ForwardPossible)
 lookupModel modName = do
   cache <- (lift . LookupModel) (lift . lift . readIORef =<< ask)
   case M.lookup modName cache of
@@ -98,28 +100,37 @@ domainBlock :: ModelParser ()
 domainBlock = do
   sp <- mkSrcPoint
   ident <- (ftoken "domain" *> identifier <* tokenSep <* char '=')
-  expr <- (do
-    (cloneAnnot, domExpr) <-
-      ((ftoken "clone" *> ((NormalClone,) <$> domainExpression)) <|>
-       (do
-           ftoken "subset"
-           dexpr <- domainExpression
-           ftoken "using"
-           sexpr <- anyExpression
-           return ((SubsetClone sexpr), dexpr)
-       ) <|>
-       (do
-           ftoken "connect"
-           dexpr <- domainExpression
-           ftoken "using"
-           sexpr <- anyExpression
-           return ((ConnectClone sexpr), dexpr)
-       ))
-    
-    sp' <- finishSrcSpan sp
-    
-    return $ CloneDomain sp' cloneAnnot domExpr
-          ) <|> domainExpression
+  withNewNamespace ident sp $ do
+    dtype <- (do
+                (cloneAnnot, domType) <-
+                  ((ftoken "clone" *> ((,) NormalClone <$> domainType)) <|>
+                   (do
+                       ftoken "subset"
+                       dexpr <- domainType
+                       ftoken "using"
+                       sexpr <- anyExpression
+                       return ((SubsetClone sexpr), dexpr)
+                   ) <|>
+                   (do
+                       ftoken "connect"
+                       dexpr <- domainType
+                       ftoken "using"
+                       sexpr <- anyExpression
+                       return ((ConnectClone sexpr), dexpr)
+                   ))
+                sp' <- finishSrcSpan sp
+                st <- getState
+                withModel $ \m ->
+                  m { allNewDomains = M.insert (nextNewDomain m)
+                                        (CloneDomain sp' cloneAnnot domType)
+                                        (allNewDomains m),
+                      nextNewDomain = (\(NewDomainID id) -> NewDomainID (id + 1))
+                                      (nextNewDomain m)
+                    }
+                return $ (UseNewDomain . OFKnown . nextNewDomain . psModel) st
+             ) <|> domainType
+    withCurrentNamespace $
+      \ns -> ns { nsDomains = M.insert ident dtype (nsDomains ns) }
 
 withNewNamespace name sp f = do
   ensureIdentifierUnique name
@@ -443,6 +454,9 @@ withCurrentNamespace f = do
     M.insert (psCurrentNamespace st) (f ((allNamespaces curModel)!(psCurrentNamespace st))) (allNamespaces curModel)
                                      } }
 
+withModel :: (Model -> Model) -> ModelParser ()
+withModel f = modifyState $ \st -> st { psModel = f (psModel st) }
+
 getIndent = (head . psIndent) <$> getState
 
 getCurrentNamespace = do
@@ -500,17 +514,133 @@ mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left v) = Left (f v)
 mapLeft _ (Right v) = Right v
 
-resolveForwardDefinitions :: Model OrForward -> Either String (Model NoForward)
+resolveForwardDefinitions :: Model ForwardPossible -> Either String (Model ())
 resolveForwardDefinitions m =
   let
     (err, m') = translateForwardDefinitions m
   in
-   if null err then Right (unsafeOrForwardToNoForward m') else Left err
+   if null err then Right (unsafeModelOrForwardToNoForward m') else Left err
 
-unsafeOrForwardToNoForward :: Model OrForward -> Model NoForward
-unsafeOrForwardToNoForward = undefined
+unsafeModelOrForwardToNoForward :: Model ForwardPossible -> Model ()
+unsafeModelOrForwardToNoForward m = m {
+    allNamespaces =
+       M.map (\ns -> ns {
+                 nsNamespaces = M.map unsafeOrForwardToNoForward (nsNamespaces m),
+                 nsValues = M.map unsafeOrForwardToNoForward (nsValues m),
+                 nsClasses = M.map unsafeOrForwardToNoForward (nsClasses m),
+                 nsLabels = M.map unsafeELabelOrForwardToNoForward (nsLabels m),
+                 nsUnits = M.map unsafeOrForwardToNoForward (nsUnits m)
+                        }) (allNamespaces m),
+    allNewDomains =
+      M.map (let f (BuiltinDomain ss) = BuiltinDomain ss
+                 f (CloneDomain ss ca dt) =
+                   CloneDomain ss (fixCloneAnnotation ca)
+                               (unsafeDomainTypeOrForwardToNoForward dt)
+                 fixCloneAnnotation NormalClone = NormalClone
+                 fixCloneAnnotation (SubsetClone expr) = SubsetClone
+                   (unsafeExpressionOrForwardToNoForward expr)
+                 fixCloneAnnotation (ConnectClone exprs) = ConnectClone
+                   (map unsafeExpressionOrForwardToNoForward exprs)
+               in f) (allNewDomains m),
+    allDomainClasses =
+      M.map (\(DomainClass ss ck df cv) ->
+              DomainClass ss ck df (M.map (\(i, dt) -> (i, unsafeDomainTypeOrForwardToNoForward dt)) cv)) (allDomainClasses m),
+    instancePool =
+      M.fromList . map (
+        \((dcid, dtl), (Instance ss ip idf ia)) ->
+          ((dcid, map unsafeDomainTypeOrForwardToNoForward dtl),
+           (Instance ss ip (M.map unsafeDomainTypeOrForwardToNoForward idf)
+                     (map unsafeExpressionOrForwardToNoForward ia)))
+        ) . M.toList . instancePool $ m,
+    modelAssertions =
+      map unsafeExpressionOrForwardToNoForward (modelAssertions m)
+  }
 
-translateForwardDefinitions :: Model OrForward -> (String, Model OrForward)
+unsafeExpressionOrForwardToNoForward (Apply ss fex argex) =
+  Apply ss (unsafeExpressionOrForwardToNoForward fex)
+        (unsafeExpressionOrForwardToNoForward argex)
+unsafeExpressionOrForwardToNoForward (NamedValueRef ss nvid) =
+  NamedValueRef ss (unsafeOrForwardToNoForward nvid)
+unsafeExpressionOrForwardToNoForward (LabelRef ss el) =
+  LabelRef ss (unsafeELabelOrForwardToNoForward el)
+unsafeExpressionOrForwardToNoForward (LiteralReal ss uexpr r) =
+  LiteralReal ss (unsafeUnitExprOrForwardToNoForward uexpr) r
+unsafeExpressionOrForwardToNoForward (BoundVar ss sv) =
+  BoundVar ss (unsafeOrForwardToNoForward sv)
+unsafeExpressionOrForwardToNoForward (MkProduct ss l2e) =
+  MkProduct ss (M.fromList . map (\(l, e) -> (unsafeELabelOrForwardToNoForward l,
+                                              unsafeExpressionOrForwardToNoForward e)
+                                 ) . M.toList $ l2e)
+unsafeExpressionOrForwardToNoForward (MkUnion ss l) =
+  MkUnion ss (unsafeELabelOrForwardToNoForward l)
+unsafeExpressionOrForwardToNoForward (Project ss l) =
+  Project ss (unsafeELabelOrForwardToNoForward l)
+unsafeExpressionOrForwardToNoForward (Append ss l) =
+  Append ss (unsafeELabelOrForwardToNoForward l)
+unsafeExpressionOrForwardToNoForward (Lambda ss sv ex) =
+  Lambda ss (unsafeOrForwardToNoForward sv) (unsafeExpressionOrForwardToNoForward ex)
+unsafeExpressionOrForwardToNoForward (Case ss ex l2f) = 
+  Case ss (unsafeExpressionOrForwardToNoForward ex) (M.fromList . map (\(l, ex) -> (unsafeELabelOrForwardToNoForward l, unsafeExpressionOrForwardToNoForward ex)) . M.toList $ l2f)
+unsafeExpressionOrForwardToNoForward (Undefined ss) = Undefined ss
+
+unsafeELabelOrForwardToNoForward (ELabel ens v) =
+  ELabel (unsafeOrForwardToNoForward ens) v
+
+unsafeUnitExprOrForwardToNoForward (UnitDimensionless ss) = UnitDimensionless ss
+unsafeUnitExprOrForwardToNoForward (UnitRef ss uid) =
+  UnitRef ss (unsafeOrForwardToNoForward uid)
+unsafeUnitExprOrForwardToNoForward (UnitTimes ss u1 u2) =
+  UnitTimes ss (unsafeUnitExprOrForwardToNoForward u1)
+            (unsafeUnitExprOrForwardToNoForward u2)
+unsafeUnitExprOrForwardToNoForward (UnitPow ss u v) =
+  UnitPow ss (unsafeUnitExprOrForwardToNoForward u) v
+unsafeUnitExprOrForwardToNoForward (UnitScalarMup ss scal u) =
+  UnitScalarMup ss scal (unsafeUnitExprOrForwardToNoForward u)
+unsafeUnitExprOrForwardToNoForward (UnitScopedVar ss sv) =
+  UnitScopedVar ss (unsafeOrForwardToNoForward sv)
+
+unsafeDomainTypeOrForwardToNoForward (DomainType ss (DomainHead dcrs) de) =
+  DomainType ss
+    (DomainHead
+     (map 
+      (let
+          f (DomainClassRelation dcid dts) =
+            DomainClassRelation (unsafeOrForwardToNoForward dcid)
+              (map unsafeDomainTypeOrForwardToNoForward dts)
+          f (DomainClassEqual dt1 dt2) =
+              DomainClassEqual (unsafeDomainTypeOrForwardToNoForward dt1)
+                (unsafeDomainTypeOrForwardToNoForward dt2)
+          f (DomainUnitConstraint ue) =
+            DomainUnitConstraint (unsafeOrForwardToNoForward ue)
+                           in f) dcrs))
+    (unsafeDomainExpressionOrForwardToNoForward de)
+
+unsafeDomainExpressionToOrForwardNoForward (UseNewDomain d) =
+  UseNewDomain (unsafeOrForwardToNoForward d)
+unsafeDomainExpressionOrForwardToNoForward (UseRealUnits ue) =
+  UseRealUnits (unsafeUnitExprOrForwardToNoForward ue)
+unsafeDomainExpressionOrForwardToNoForward (ApplyDomain to sv val) =
+  ApplyDomain (unsafeDomainExpressionOrForwardToNoForward to)
+              (unsafeOrForwardToNoForward sv)
+              (unsafeDomainExpressionOrForwardToNoForward val)
+unsafeDomainExpressionOrForwardToNoForward (DomainVariable sv) =
+  DomainVariable (unsafeOrForwardToNoForward sv)
+unsafeDomainExpressionOrForwardToNoForward (ProductDomain l2e) =
+  ProductDomain . M.fromList . map (\(l, de) -> (unsafeELabelOrForwardToNoForward l, unsafeDomainExpressionOrForwardToNoForward de)) . M.toList $ l2e
+unsafeDomainExpressionOrForwardToNoForward (DisjointUnion l2e) =
+  DisjointUnion . M.fromList . map (\(l, de) -> (unsafeELabelOrForwardToNoForward l, unsafeDomainExpressionOrForwardToNoForward de)) . M.toList $ l2e
+unsafeDomainExpressionOrForwardToNoForward (FieldSignature d cd) =
+  FieldSignature (unsafeDomainExpressionOrForwardToNoForward d)
+                 (unsafeDomainExpressionOrForwardToNoForward cd)
+unsafeDomainExpressionOrForwardToNoForward (EvaluateDomainFunction dcid fid de) =
+  EvaluateDomainFunction (unsafeOrForwardToNoForward dcid) fid
+                 (unsafeDomainExpressionOrForwardToNoForward de)
+
+unsafeOrForwardToNoForward :: OrForward t ForwardPossible -> OrForward t ()
+unsafeOrForwardToNoForward (OFKnown v) = OFKnown v
+unsafeOrForwardToNoForward (OFForward _ _ _) = error "unsafeOrForwardToNoForward encountered an OFForward, but it is only supposed to be used once all possible OFForward entries have been resolved"
+
+translateForwardDefinitions :: Model ForwardPossible -> (String, Model ForwardPossible)
 translateForwardDefinitions = undefined
 
 justOrFail failWith Nothing = prettyFail failWith
