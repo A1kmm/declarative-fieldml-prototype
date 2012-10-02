@@ -23,7 +23,6 @@ cOFKnown :: Data.Data.Constr
 cOFKnown = mkConstr tOrForward
              "OFKnown" [] Prefix
 
-deriving instance Data (ELabel ())
 deriving instance Data (NewDomain ())
 deriving instance Data (CloneAnnotation ())
 deriving instance Data (DomainExpression ())

@@ -34,7 +34,11 @@ data ForwardPossible = ForwardPossible deriving (Eq, Ord, Typeable, Data, Show)
 -- | GADT which accepts forward definitions if parameter is ForwardPossible.
 data OrForward t forward where
   OFKnown :: t -> OrForward t forward
-  OFForward :: NamespaceID -> SrcSpan -> BS.ByteString -> OrForward t ForwardPossible
+  OFForward :: NamespaceID {- ^ Start from what namespace? -} ->
+               SrcSpan {- ^ Where was the forward defined (for error reporting purposes) -} ->
+               Bool {- ^ Is it necessary to search ancestor namespaces? -} ->
+               [BS.ByteString] {- ^ What is the path from the start namespace? -} ->
+               OrForward t ForwardPossible
   
 deriving instance Eq t => Eq (OrForward t forward)
 deriving instance Ord t => Ord (OrForward t forward)
@@ -63,10 +67,9 @@ data Model forward = Model {
   modelForeignUnits :: M.Map (BS.ByteString, UnitID) UnitID -- ^ Foreign => Local units map
   } deriving (Eq, Ord, Show, Typeable)
 
-data ELabel forward = ELabel { labelEnsemble :: OrForward NamespaceID forward,
-                               labelValue :: Integer
-                             } deriving (Eq, Ord, Show, Typeable)
--- deriving instance Data (ELabel ())
+data ELabel = ELabel { labelEnsemble :: NamespaceID,
+                       labelValue :: Integer
+                     } deriving (Eq, Ord, Show, Typeable, Data)
 
 data NewDomain forward = CloneDomain SrcSpan (CloneAnnotation forward)
                                              (DomainType forward) | -- ^ Clone another domain.
@@ -88,10 +91,10 @@ data CloneAnnotation forward = NormalClone |             -- ^ A straight clone.
 data DomainExpression forward =
   UseNewDomain (OrForward NewDomainID forward) | -- ^ Refer to a defined domain
   UseRealUnits (UnitExpr forward) | -- ^ Refer to a builtin Real with units domain.
-  ApplyDomain (DomainExpression forward) (OrForward ScopedVariable forward) (DomainExpression forward) | -- ^ Apply one domain variable
-  DomainVariable (OrForward ScopedVariable forward) | -- ^ Refer to a domain variable.
-  ProductDomain (M.Map (ELabel forward) (DomainExpression forward)) | -- ^ Product domain.
-  DisjointUnion (M.Map (ELabel forward) (DomainExpression forward)) | -- ^ Disjoint union.
+  ApplyDomain (DomainExpression forward) ScopedVariable (DomainExpression forward) | -- ^ Apply one domain variable
+  DomainVariable ScopedVariable | -- ^ Refer to a domain variable.
+  ProductDomain (M.Map (OrForward ELabel forward) (DomainExpression forward)) | -- ^ Product domain.
+  DisjointUnion (M.Map (OrForward ELabel forward) (DomainExpression forward)) | -- ^ Disjoint union.
   FieldSignature (DomainExpression forward) (DomainExpression forward) | -- ^ Field signature.
   -- | Completely evaluate a domainfunction. Negative values reference class arguments.
   EvaluateDomainFunction (OrForward DomainClassID forward) Int [DomainExpression forward]
@@ -104,7 +107,7 @@ data DomainHead forward = DomainHead [DomainClassRelation forward] deriving (Eq,
 data DomainClassRelation forward =
   DomainClassRelation (OrForward DomainClassID forward) [DomainType forward] |
   DomainClassEqual (DomainType forward) (DomainType forward) |
-  DomainUnitConstraint (UnitExpr forward) -- ^ A units constraint on the domain.
+  DomainUnitConstraint (UnitExpr forward) (UnitExpr forward) -- ^ A units constraint on the domain.
   deriving (Eq, Ord, Show, Typeable)
 
 data Namespace forward = Namespace {
@@ -119,7 +122,7 @@ data Namespace forward = Namespace {
   -- | All classes.
   nsClasses :: M.Map BS.ByteString (OrForward DomainClassID forward),
   -- | All labels in the namespace.
-  nsLabels :: M.Map BS.ByteString (ELabel forward),
+  nsLabels :: M.Map BS.ByteString ELabel,
   -- | The units in the namespace.
   nsUnits :: M.Map BS.ByteString (UnitExpr forward),
   -- | The parent of this namespace.
@@ -164,18 +167,16 @@ data NamedValue = NamedValue {
 
 data Expression forward = Apply SrcSpan (Expression forward) (Expression forward) | -- ^ Apply an expression to a field expression
                           NamedValueRef SrcSpan (OrForward NamedValueID forward) | -- ^ Reference a named field.
-                          LabelRef SrcSpan (ELabel forward)   | -- ^ Reference a label.
+                          LabelRef SrcSpan (OrForward ELabel forward)   | -- ^ Reference a label.
                           LiteralReal SrcSpan (UnitExpr forward) Double | -- ^ Reference a real value.
-                          BoundVar SrcSpan (OrForward ScopedVariable forward) | -- ^ Reference a bound variable.
-                          MkProduct SrcSpan (M.Map (ELabel forward) (Expression forward)) | -- ^ Construct a product.
-                          MkUnion SrcSpan (ELabel forward) | -- ^ Make a field that constructs a union.
-                          Project SrcSpan (ELabel forward) | -- ^ Make a field that deconstructs a union.
-                          Append SrcSpan (ELabel forward)  | -- ^ Make a field that adds to a product.
-                          Lambda SrcSpan (OrForward ScopedVariable forward) (Expression forward) | -- ^ Define a lambda field.
+                          BoundVar SrcSpan ScopedVariable | -- ^ Reference a bound variable.
+                          MkProduct SrcSpan (M.Map (OrForward ELabel forward) (Expression forward)) | -- ^ Construct a product.
+                          MkUnion SrcSpan (OrForward ELabel forward) | -- ^ Make a field that constructs a union.
+                          Project SrcSpan (OrForward ELabel forward) | -- ^ Make a field that deconstructs a union.
+                          Append SrcSpan (OrForward ELabel forward)  | -- ^ Make a field that adds to a product.
+                          Lambda SrcSpan ScopedVariable (Expression forward) | -- ^ Define a lambda field.
                           -- | Split on values of the first Expression. The final Expression specifies what to do if nothing matches.
-                          Case SrcSpan (Expression forward) (M.Map (ELabel forward) (Expression forward)) |
-                          -- | Undefined is used to specify that the value of an expression is not known. It may be used as a placeholder for unknown parameters or fields that need to be solved for.
-                          Undefined SrcSpan
+                          Case SrcSpan (Expression forward) (M.Map (OrForward ELabel forward) (Expression forward))
                         deriving (Eq, Ord, Show, Typeable)
 
 -- | Represents an expression on units.
@@ -185,7 +186,7 @@ data UnitExpr forward =
   UnitTimes SrcSpan (UnitExpr forward) (UnitExpr forward) | -- ^ Multiply two units. E.g. Times metre second = metre.second
   UnitPow SrcSpan (UnitExpr forward) Double | -- ^ Raise a unit to a power. e.g. Pow second -1 = second^-1
   UnitScalarMup SrcSpan Double (UnitExpr forward) | -- ^ Multiply a unit by a scalar. E.g. ScalarMup 1E-3 metre = millimetre
-  UnitScopedVar SrcSpan (OrForward ScopedVariable forward) -- ^ Refer to a scoped variable.
+  UnitScopedVar SrcSpan ScopedVariable -- ^ Refer to a scoped variable.
   deriving (Eq, Ord, Show, Typeable)
 
 -- | Represents a unit that has been defined.

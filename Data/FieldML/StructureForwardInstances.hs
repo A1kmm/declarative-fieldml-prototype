@@ -6,7 +6,6 @@ import Data.Data
 import Data.FieldML.Structure
 
 deriving instance Data t => Data (OrForward t ForwardPossible)
-deriving instance Data (ELabel ForwardPossible)
 deriving instance Data (NewDomain ForwardPossible)
 deriving instance Data (CloneAnnotation ForwardPossible)
 deriving instance Data (DomainExpression ForwardPossible)

@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings,ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings,ScopedTypeVariables,PatternGuards,GADTs #-}
 module Data.FieldML.Parser where
 
 import Data.FieldML.Structure
@@ -22,7 +22,10 @@ import Network.Curl
 import Data.Maybe
 import Data.Generics.Uniplate.Data
 import Data.Monoid
-import Data.Data
+import Data.Data hiding (Infix, Prefix)
+import Data.List
+import Data.Char
+import Text.Parsec.Expr
 
 -- Note: Models are cached in ForwardPossible form, but should not actually contain any
 -- forward references. The reason for using ForwardPossible form is to allow them to be
@@ -38,7 +41,8 @@ data ParserState = ParserState {
     psSearchPaths :: [String],
     psModel :: Model ForwardPossible,
     psCurrentNamespace :: NamespaceID,
-    psIndent :: [Int]
+    psIndent :: [Int],
+    psScopedVars :: M.Map BS.ByteString ScopedVariable
   }
 
 type ModelParser a = ParsecT BS.ByteString ParserState LookupModel a
@@ -52,9 +56,9 @@ loadModel incl mpath = do
       mf <- flip runReaderT mlist $
               unlookupModel $
                 (either (fail.show) return =<<
-                   runParserT modelParser (ParserState incl initialModel nsMain (repeat 1))
+                   runParserT modelParser (ParserState incl initialModel nsMain (repeat 1) M.empty)
                    mpath (v :: BS.ByteString))
-      ErrorT $ resolveForwardDefinitions mf
+      ErrorT . return $ resolveForwardDefinitions mf
     else
       fail $ "Can't load initial model " ++ mpath ++ ": " ++ (show r)
 
@@ -72,7 +76,8 @@ lookupModel modName = do
           if r == CurlOK
             then do
               st <- getState
-              pr <- lift $ runParserT modelParser (st { psCurrentNamespace = nsMain, psModel = initialModel, psIndent = repeat 1 }) mpath v
+              pr <- lift $ runParserT modelParser (st { psCurrentNamespace = nsMain, psModel = initialModel,
+                                                        psIndent = repeat 1, psScopedVars = M.empty }) mpath v
               case pr of
                 Left err -> prettyFail (show err ++ "\n")
                 Right m -> do
@@ -82,13 +87,13 @@ lookupModel modName = do
               return Nothing
                          ))
 
-modelParser :: ModelParser Model
+modelParser :: ModelParser (Model forward)
 modelParser = do
   namespaceContentsParser
   psModel <$> getState
 
 namespaceContentsParser :: ModelParser ()
-namespaceContentsParser = (many $
+namespaceContentsParser = (many $ withVarScope $
   importStatement <|> namespaceBlock <|> domainBlock) >> (return ())
 
 namespaceBlock :: ModelParser ()
@@ -99,7 +104,9 @@ namespaceBlock = do
 domainBlock :: ModelParser ()
 domainBlock = do
   sp <- mkSrcPoint
-  ident <- (ftoken "domain" *> identifier <* tokenSep <* char '=')
+  ftoken "domain"
+  blockBegin
+  ident <- (identifier <* tokenSep <* char '=')
   withNewNamespace ident sp $ do
     dtype <- (do
                 (cloneAnnot, domType) <-
@@ -115,7 +122,7 @@ domainBlock = do
                        ftoken "connect"
                        dexpr <- domainType
                        ftoken "using"
-                       sexpr <- anyExpression
+                       sexpr <- sepBy anyExpression (try (tokenSep *> char ','))
                        return ((ConnectClone sexpr), dexpr)
                    ))
                 sp' <- finishSrcSpan sp
@@ -127,10 +134,121 @@ domainBlock = do
                       nextNewDomain = (\(NewDomainID id) -> NewDomainID (id + 1))
                                       (nextNewDomain m)
                     }
-                return $ (UseNewDomain . OFKnown . nextNewDomain . psModel) st
+                return $ (DomainType sp' (DomainHead []) . UseNewDomain . OFKnown . nextNewDomain . psModel) st
              ) <|> domainType
     withCurrentNamespace $
       \ns -> ns { nsDomains = M.insert ident dtype (nsDomains ns) }
+    ((ftoken "where" *> namespaceContentsParser) <|> pure ())
+  blockEnd
+
+domainType = do
+  sp <- mkSrcPoint
+  dh <- (try (domainHead <* tokenSep <* "=>") <|> pure (DomainHead []))
+  tokenSep
+  de <- domainExpression
+  sp' <- finishSrcSpan sp
+  return $ DomainType sp' dh de
+
+domainHead = (char '(' *> (DomainHead <$> sepBy domainClassRelation (char ',')) <* char ')') <|>
+             ((DomainHead . (:[])) <$> domainClassRelation)
+
+domainClassRelation = (DomainUnitConstraint <$> (ftoken "unit" *> unitExpression)
+                                            <*> (tokenSep *> char '~' *> tokenSep *> unitExpression)) <|>
+                      (try $ DomainClassEqual <$>
+                         domainType <*> ((tokenSep *> char '~' *> tokenSep) *> domainType)) <|>
+                      (DomainClassRelation <$> identifiedClass <*> sepBy domainType tokenSep)
+
+domainExpression =
+  (char '{' *> (ProductDomain <$> labelMap (char ',')) <* char '}') <|>
+  (try $ char '(' *> (DisjointUnion <$> mFailUnless "A disjoint union needs >1 domain" (not . M.null) (labelMap (char '|'))) <* char ')') <|>
+  (FieldSignature <$> (try (domainExpression <* tokenSep <* string "<-" <* tokenSep)) <*> domainExpression) <|>
+  (char '(' *> domainExpression <* char ')') <|>
+  (UseRealUnits <$> (try (ftoken "R" *> tokenSep *> char '[') *> tokenSep *> unitExpression <* tokenSep <* char ']')) <|>
+  ((try $ ApplyDomain <$> domainExpression <*> ((tokenSep *> refScopedVar) <* tokenSep <* char '=')) <*>
+   (tokenSep *> domainExpression)
+  ) <|>
+  (DomainVariable <$> refScopedVar) <|>
+  (UseNewDomain <$> identifiedDomain)
+
+someInteger :: Integral a => ModelParser a
+someInteger = (fst . foldl' (\(v,m) d -> (v + m * ((fromIntegral . digitToInt) d),
+                                          m * 10)) (0,1)) <$> (many1 digit)
+someSignedInteger :: Integral a => ModelParser a
+someSignedInteger = (char '-' *> (negate <$> someInteger)) <|> someInteger
+
+someDouble = do
+  iPart <- someSignedInteger <|> pure 0
+  fPart <- (char '.' *>
+             ((fst . foldl' (\(v,m) d -> (v + m * ((fromIntegral . digitToInt) d),
+                                          m / 10)) (0,0.1)) <$> (many1 digit))
+           ) <|> pure 0
+  ePart <- ((char 'E' <|> char 'e') *> someInteger) <|> pure 0
+  return $ (iPart + fPart) * (10**ePart)
+
+unitExpression =
+  buildExpressionParser [
+        [Postfix (try (tokenSep >> "**" >> tokenSep) >> mkSrcPoint >>= \ss -> someDouble >>= \pow -> return (flip (UnitPow ss) pow))],
+        [Infix (try (tokenSep >> "*" >> tokenSep) >> mkSrcPoint >>= \ss -> return (UnitTimes ss)) AssocLeft,
+         Prefix (someDouble >>= \scalar -> mkSrcPoint >>= \ss -> (char '*' *> return (UnitScalarMup ss scalar)))]
+      ] (do
+            ss <- mkSrcPoint
+            (char '(' *> unitExpression <* char ')') <|>
+             (ftoken "dimensionless" *> (pure $ UnitDimensionless ss)) <|>
+             (UnitRef ss <$> identifiedUnit) <|>
+             (UnitScopedVar ss <$> refScopedVar)
+        )
+
+anyExpression =
+  buildExpressionParser [
+      [Infix (mkSrcPoint >>= \ss -> return $ Apply ss) AssocLeft]
+    ] ((mkSrcPoint >>= \ss -> try (ftoken "N" >> "::" >> tokenSep) >>
+                              someInteger >>= \i -> return (LabelRef ss (OFKnown (ELabel nsNatural i)))) <|>
+       (mkSrcPoint >>= \ss -> try (ftoken "I" >> "::" >> tokenSep) >>
+                              someSignedInteger >>= \i -> return (LabelRef ss (OFKnown (ELabel nsInteger i)))) <|>
+       (do
+           ss <- mkSrcPoint
+           rUnits <- try (ftoken "R" *> maybeUnits <* "::" <* tokenSep)
+           dval <- someDouble
+           return $ LiteralReal ss rUnits dval
+       ) <|>
+       (BoundVar <$> mkSrcPoint <*> refScopedVar) <|>
+       (do
+           ss <- mkSrcPoint
+           try (tokenSep *> char '{' *> tokenSep)
+           m <- M.fromList <$> (sepBy ((,) <$> identifiedLabel <*> (tokenSep *> char ':' *> anyExpression)) (char ','))
+           tokenSep *> char '}'
+           ss' <- finishSrcSpan ss
+           return $ MkProduct ss' m
+       ) <|>
+       (ftoken "as" *> (MkUnion <$> mkSrcPoint <*> identifiedLabel)) <|>
+       (ftoken "lookup" *> (Project <$> mkSrcPoint <*> identifiedLabel)) <|>
+       (ftoken "append" *> (Append <$> mkSrcPoint <*> identifiedLabel)) <|>
+       (char '\\' *> (Lambda <$> mkSrcPoint <*> refScopedVar <*> (tokenSep *> string "->" *> anyExpression))) <|>
+       (Case <$> (ftoken "case" *> mkSrcPoint) <*> anyExpression <*>
+        (ftoken "of" *> blockBegin *>
+         (M.fromList <$> many ((,) <$> identifiedLabel <*> (string "->" *> tokenSep *>
+                                                            anyExpression))) <* blockEnd)) <|>
+       (NamedValueRef <$> mkSrcPoint <*> identifiedValue)
+      )
+
+maybeUnits =
+  (char '[' *> unitExpression <* char ']') <|> (UnitDimensionless <$> mkSrcPoint)
+
+refScopedVar = do
+  ident <- try (tokenSep *> char '_') *> justIdentifier
+  st <- getState
+  case M.lookup ident (psScopedVars st) of
+    Just sv -> return sv
+    Nothing -> do
+      let nsv = nextScopedVariable (psModel st)
+      putState $ st { psModel = (psModel st) { nextScopedVariable = (\(ScopedVariable svid) -> ScopedVariable (svid + 1)) nsv },
+                      psScopedVars = M.insert ident nsv (psScopedVars st) }
+      return nsv
+
+labelMap =
+  M.fromList <$>
+    (many $ ((,) <$> (identifiedLabel <* tokenSep <* char ':') <*> identifiedDomain) <|>
+            (identifiedDomainAndLabel))
 
 withNewNamespace name sp f = do
   ensureIdentifierUnique name
@@ -222,7 +340,7 @@ doImport (mu@(Just modelURL), startWhere, whichSymbols, hidingWhichSymbols, _) =
   st <- getState
   let startWhere' = if not (null startWhere) && head startWhere == "::" then tail startWhere else startWhere
   importFromModel mu m (toplevelNamespace . psModel $ st) startWhere' whichSymbols hidingWhichSymbols
-  
+
 doImport (_, startWhere, whichSymbols, hidingWhichSymbols, _) = do
   st <- getState
   let (ns, path) = if not (null startWhere) && head startWhere == "::" then
@@ -250,7 +368,6 @@ importFromModel modelURL fromModel ns (nsname:startWhere) whichSymbols hidingWhi
   case tryFindNamespaceScoped fromModel ns nsname of
     Nothing -> prettyFail $ "Namespace at " ++ (show . nsSrcSpan $ (allNamespaces fromModel)!ns) ++ " has no child namespace " ++
                (BS.unpack nsname)
-               
     Just ns' ->
       importFromModel modelURL fromModel ns' startWhere whichSymbols hidingWhichSymbols
 
@@ -301,7 +418,7 @@ importFromModel modelURL fromModel nsID [] whichSymbols hidingWhichSymbols = do
             modifyState $ \st ->
               st { psModel = (psModel st) { instancePool = M.insert localHead localInstance (instancePool (psModel st)) } }
 
-importSymbolFromModel :: Maybe BS.ByteString -> Model -> NamespaceID -> BS.ByteString -> ModelParser ()
+importSymbolFromModel :: Maybe BS.ByteString -> Model forward -> NamespaceID -> BS.ByteString -> ModelParser ()
 importSymbolFromModel modelURL m ns sym =
   case
     (importOneNamespace modelURL m sym <$> tryFindNamespaceScoped m ns sym) `mplus`
@@ -328,12 +445,51 @@ tryFindSomethingScoped f m ns sym =
   in
    case M.lookup sym (f nsData) of
      Just something -> return something
-     Nothing -> if (nsParent nsData == nsSpecial) then
-                  Nothing
-                else
-                  tryFindSomethingScoped f m (nsParent nsData) sym
+     Nothing -> if (nsParent nsData == nsSpecial)
+                  then Nothing
+                  else tryFindSomethingScoped f m (nsParent nsData) sym
 
-traceToSource :: Eq b => (Model -> M.Map (BS.ByteString, b) b) -> Maybe BS.ByteString -> Model -> b -> ModelParser (Maybe BS.ByteString, Model, b)
+identifiedSomething whenNull = do
+  ss <- mkSrcPoint
+  fullPath <- pathSpec
+  ss' <- finishSrcSpan ss
+  st <- getState
+  
+  when (null fullPath) $ fail "Expected a path"
+  let (startNS, relPath) = if head fullPath == "::"
+                             then (toplevelNamespace . psModel $ st, tail fullPath)
+                             else (psCurrentNamespace st, fullPath)
+  when (null relPath) whenNull
+  return $ OFForward startNS ss' True relPath
+
+identifiedNamespace :: ModelParser (OrForward NamespaceID ForwardPossible)
+identifiedNamespace = identifiedSomething return
+identifiedDomain :: ModelParser (OrForward NewDomainID ForwardPossible)
+identifiedDomain = identifiedSomething (fail "Expected a valid domain name")
+identifiedValue :: ModelParser (OrForward NamedValueID ForwardPossible)
+identifiedValue = identifiedSomething (fail "Expected a valid named value name")
+identifiedClass :: ModelParser (OrForward DomainClassID ForwardPossible)
+identifiedClass = identifiedSomething (fail "Expected a valid class name")
+identifiedLabel :: ModelParser (OrForward ELabel ForwardPossible)
+identifiedLabel = identifiedSomething (fail "Expected a valid label name")
+identifiedUnit :: ModelParser (OrForward UnitID ForwardPossible)
+identifiedUnit = identifiedSomething (fail "Expected a valid unit name")
+
+identifiedDomainAndLabel :: ModelParser (OrForward ELabel ForwardPossible, OrForward NewDomainID ForwardPossible)
+identifiedDomainAndLabel = do
+  ss <- mkSrcPoint
+  fullPath <- pathSpec
+  ss' <- finishSrcSpan ss
+  st <- getState
+  
+  when (null fullPath) $ fail "Expected a path"
+  let (startNS, relPath) = if head fullPath == "::"
+                             then (toplevelNamespace . psModel $ st, tail fullPath)
+                             else (psCurrentNamespace st, fullPath)
+  when (null relPath) (fail "Expected a valid domain name")
+  return (OFForward startNS ss' True relPath, OFForward startNS ss' True relPath)
+
+traceToSource :: Eq b => (Model forward -> M.Map (BS.ByteString, b) b) -> Maybe BS.ByteString -> Model forward -> b -> ModelParser (Maybe BS.ByteString, Model forward, b)
 traceToSource f url model fid =
   case url of
     Nothing -> return (Nothing, model, fid)
@@ -344,18 +500,18 @@ traceToSource f url model fid =
           model' <- lookupModel url'
           return (Just url', model', fid')
 
-ensureStructureLocalM :: Data a => Maybe BS.ByteString -> Model -> a -> ModelParser a
+ensureStructureLocalM :: Data a => Maybe BS.ByteString -> Model forward -> a -> ModelParser a
 ensureStructureLocalM foreignURL mForeign s =
   transformBiM (ensureNamespaceLocal foreignURL mForeign) =<<
-  transformBiM (ensureDomainLocal foreignURL mForeign) =<<
+  transformBiM (ensureDomainLocal foreignURL mForeign) =<<  
   transformBiM (ensureDomainClassLocal foreignURL mForeign) =<<
   transformBiM (ensureNamedValueLocal foreignURL mForeign) =<<
   transformBiM (ensureUnitsLocal foreignURL mForeign) s
 
 ensureSomethingLocal :: (Show a, Eq a, Ord a, Data b) =>
-                        (Model -> M.Map (BS.ByteString, a) a) -> (Model -> M.Map a b) -> (Model -> a) ->
-                        (Model -> Model) -> (Model -> M.Map a b -> Model) ->
-                        (Model -> M.Map (BS.ByteString, a) a -> Model) -> Maybe BS.ByteString -> Model -> a ->
+                        (Model forward -> M.Map (BS.ByteString, a) a) -> (Model forward-> M.Map a b) -> (Model forward -> a) ->
+                        (Model forward -> Model forward) -> (Model forward -> M.Map a b -> Model forward) ->
+                        (Model forward -> M.Map (BS.ByteString, a) a -> Model forward) -> Maybe BS.ByteString -> Model forward -> a ->
                         ModelParser a
 ensureSomethingLocal modelForeignSomething allSomething nextID incrementNextID setAllSomething setForeignSomething foreignURL' mForeign' foreignID' = do
   (foreignURL, mForeign, foreignID) <- traceToSource modelForeignSomething foreignURL' mForeign' foreignID'
@@ -446,7 +602,7 @@ importOneUnit foreignURL mForeign sym foreignUnits = do
       nsUnits = M.insert sym localUnits (nsUnits ns)
     }
 
-withCurrentNamespace :: (Namespace -> Namespace) -> ModelParser ()
+withCurrentNamespace :: (Namespace forward -> Namespace forward) -> ModelParser ()
 withCurrentNamespace f = do
   st <- getState
   let curModel = psModel st
@@ -454,7 +610,7 @@ withCurrentNamespace f = do
     M.insert (psCurrentNamespace st) (f ((allNamespaces curModel)!(psCurrentNamespace st))) (allNamespaces curModel)
                                      } }
 
-withModel :: (Model -> Model) -> ModelParser ()
+withModel :: (Model forward -> Model forward) -> ModelParser ()
 withModel f = modifyState $ \st -> st { psModel = f (psModel st) }
 
 getIndent = (head . psIndent) <$> getState
@@ -467,8 +623,9 @@ getCurrentNamespace = do
 getColumn = sourceColumn <$> getPosition
 
 pathSpec = tokenSep *> ((string "::" *> (("::":) <$> relPathSpec)) <|> relPathSpec)
-relPathSpec = sepBy (BS.pack <$> some (oneOf identChars)) (string "::") <*
-              lookAhead ((noneOf (':':identChars) *> pure ()) <|> eof)
+relPathSpec = sepBy justIdentifier (string "::") <*
+              lookAhead (((noneOf (':':(identChars ++ identAltChars)) <|>
+                           try (char ':' >> noneOf (':':(identChars ++ identAltChars)))) *> pure ()) <|> eof)
 commentLine = (char '#' *> many (noneOf "\r\n") *> (eof <|> (oneOf "\r\n" *> pure ()))) <?> "a comment"
 
 blockBegin :: ModelParser ()
@@ -496,11 +653,14 @@ blockEnd = eof <|> (try $ do
   modifyState (\s -> s { psIndent = tail (psIndent s) })
   return ())
 
-identChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+identStartChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+identChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_'"
+identAltChars = "~`!@$%^&*-+=<>?"
 endToken = lookAhead ((noneOf identChars *> pure ()) <|> eof)
 ftoken n = try (tokenSep *> string n *> endToken)
 urlNoHash = tokenSep *> (BS.pack <$> some (noneOf " \t\r\n#"))
-identifier = tokenSep *> (BS.pack <$> some (oneOf identChars))
+justIdentifier = BS.pack <$> (((:) <$> (oneOf identStartChars) <$> (many (oneOf identChars))) <|> some (oneOf identAltChars))
+identifier = tokenSep *> justIdentifier
 
 mkSrcPoint = do
   sp <- getPosition
@@ -513,6 +673,13 @@ finishSrcSpan (SrcSpan sn sl sc _ _) = do
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left v) = Left (f v)
 mapLeft _ (Right v) = Right v
+
+withVarScope f = do
+  st <- getState
+  f
+  st' <- getState
+  -- Restore old scoped variables from backup...
+  putState $ st' { psScopedVars = psScopedVars st }
 
 resolveForwardDefinitions :: Model ForwardPossible -> Either String (Model ())
 resolveForwardDefinitions m =
@@ -581,7 +748,6 @@ unsafeExpressionOrForwardToNoForward (Lambda ss sv ex) =
   Lambda ss (unsafeOrForwardToNoForward sv) (unsafeExpressionOrForwardToNoForward ex)
 unsafeExpressionOrForwardToNoForward (Case ss ex l2f) = 
   Case ss (unsafeExpressionOrForwardToNoForward ex) (M.fromList . map (\(l, ex) -> (unsafeELabelOrForwardToNoForward l, unsafeExpressionOrForwardToNoForward ex)) . M.toList $ l2f)
-unsafeExpressionOrForwardToNoForward (Undefined ss) = Undefined ss
 
 unsafeELabelOrForwardToNoForward (ELabel ens v) =
   ELabel (unsafeOrForwardToNoForward ens) v
@@ -649,3 +815,17 @@ justOrFail _ (Just x) = return x
 prettyFail x = do
   p <- getPosition
   lift . fail $ x ++ "\n  at " ++ show p
+
+mFailUnless msg pred f = do
+  r <- f
+  if pred r
+    then fail msg
+    else return r
+
+foldUntil :: (a -> b -> Maybe a) -> a -> [b] -> (a, [b])
+foldUntil _ s0 [] = (s0, [])
+foldUntil f s0 l
+  | Nothing <- r = (s0, l)
+  | Just s1 <- r = foldUntil f s0 l
+    where
+      r = f s0 l

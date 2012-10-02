@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Data.FieldML.InitialModel (initialModel, blankNamespace, nsSpecial, nsMain, biSrcSpan)
+module Data.FieldML.InitialModel (initialModel, blankNamespace, nsSpecial, nsMain, biSrcSpan, nsNatural, nsInteger)
 where
 
 import qualified Data.Map as M
@@ -23,6 +23,7 @@ dBoolean = NewDomainID 2
 
 vFalse = NamedValueID 0
 vTrue = NamedValueID 1
+vUndefined = NamedValueID 2
 
 blankNamespace ss p = Namespace { nsSrcSpan = ss, nsNamespaces = M.empty, nsDomains = M.empty,
                                   nsValues = M.empty, nsClasses = M.empty, nsLabels = M.empty,
@@ -48,7 +49,7 @@ initialModel = Model {
        nsDomains = M.fromList [("N", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dNatural),
                                ("Z", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dInteger),
                                ("Boolean", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dBoolean)],
-       nsValues = M.fromList [("true", OFKnown vTrue), ("false", OFKnown vFalse)],
+       nsValues = M.fromList [("true", OFKnown vTrue), ("false", OFKnown vFalse), ("undefined", OFKnown vUndefined)],
        nsClasses = M.fromList [],
        nsLabels = M.empty,
        nsUnits = M.empty,
@@ -84,7 +85,7 @@ initialModel = Model {
           nsDomains = M.empty,
           nsValues = M.empty,
           nsClasses = M.empty,
-          nsLabels = M.fromList [("false", ELabel (OFKnown nsBoolean) 0), ("true", ELabel (OFKnown nsBoolean) 1)],
+          nsLabels = M.fromList [("false", ELabel nsBoolean 0), ("true", ELabel nsBoolean 1)],
           nsUnits = M.empty,
           nsParent = nsBuiltinMain,
           nsNextLabel = 2
