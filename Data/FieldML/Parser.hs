@@ -159,7 +159,7 @@ domainClassRelation = (DomainUnitConstraint <$> (ftoken "unit" *> unitExpression
                       (DomainClassRelation <$> identifiedClass <*> sepBy domainType tokenSep)
 
 domainExpression =
-  (char '{' *> (ProductDomain <$> labelMap (char ',')) <* char '}') <|>
+  (char '{' *> (ProductDomain <$> (labelMap (char ','))) <* char '}') <|>
   (try $ char '(' *> (DisjointUnion <$> mFailUnless "A disjoint union needs >1 domain" (not . M.null) (labelMap (char '|'))) <* char ')') <|>
   (FieldSignature <$> (try (domainExpression <* tokenSep <* string "<-" <* tokenSep)) <*> domainExpression) <|>
   (char '(' *> domainExpression <* char ')') <|>
@@ -245,17 +245,17 @@ refScopedVar = do
                       psScopedVars = M.insert ident nsv (psScopedVars st) }
       return nsv
 
-labelMap =
+labelMap sep =
   M.fromList <$>
-    (many $ ((,) <$> (identifiedLabel <* tokenSep <* char ':') <*> identifiedDomain) <|>
-            (identifiedDomainAndLabel))
+    (sepBy (((,) <$> (identifiedLabel <* tokenSep <* char ':') <*> domainExpression) <|>
+            (identifiedDomainAndLabel)) sep)
 
 withNewNamespace name sp f = do
   ensureIdentifierUnique name
   st' <- getState
   let oldModel' = psModel st'
   let newNSID = nextNSID oldModel'
-  withCurrentNamespace $ \ns -> ns { nsNamespaces = M.insert name newNSID (nsNamespaces ns) }
+  withCurrentNamespace $ \ns -> ns { nsNamespaces = M.insert name (OFKnown newNSID) (nsNamespaces ns) }
   st <- getState
   let oldNSID = psCurrentNamespace st
   let oldModel = psModel st
@@ -289,19 +289,25 @@ unitsSrcSpan (UnitScopedVar ss _) = ss
 anyNamedValueSrcSpan (NamedValue ss _) = ss
 anyNamedValueSrcSpan (FFINamedValue {}) = biSrcSpan
 
+knownOr :: a -> (t -> a) -> OrForward t ForwardPossible -> a
+knownOr _ k (OFKnown v) = k v
+knownOr v _ (OFForward {}) = v
+
+forwardSrcSpan = SrcSpan "forward-defined" 0 0 0 0
+
 ensureIdentifierUnique :: BS.ByteString -> ModelParser ()
 ensureIdentifierUnique name = do
   ns <- getCurrentNamespace
   st <- getState
   let curModel = psModel st
   let r = (M.lookup name (nsNamespaces ns) >>= \ident ->
-            return ("namespace", nsSrcSpan $ (allNamespaces curModel)!ident)) `mplus`
+            return ("namespace", knownOr forwardSrcSpan (\ident' -> nsSrcSpan $ (allNamespaces curModel)!ident') ident)) `mplus`
           (M.lookup name (nsDomains ns) >>= \(DomainType ss _ _) ->
             return ("domain", ss)) `mplus`
           (M.lookup name (nsValues ns) >>= \ident ->
-            return ("value", anyNamedValueSrcSpan $ (allNamedValues curModel)!ident)) `mplus`
+            return ("value", knownOr forwardSrcSpan (\ident' -> anyNamedValueSrcSpan $ (allNamedValues curModel)!ident') ident)) `mplus`
           (M.lookup name (nsClasses ns) >>= \ident ->
-            return ("class", classSrcSpan $ (allDomainClasses curModel)!ident)) `mplus`
+            return ("class", knownOr forwardSrcSpan (\ident' -> classSrcSpan $ (allDomainClasses curModel)!ident') ident)) `mplus`
           (M.lookup name (nsLabels ns) >>= \ident ->
             return ("label", nsSrcSpan $ (allNamespaces curModel)!(labelEnsemble ident))) `mplus`
           (M.lookup name (nsUnits ns) >>= \u ->
@@ -475,7 +481,7 @@ identifiedLabel = identifiedSomething (fail "Expected a valid label name")
 identifiedUnit :: ModelParser (OrForward UnitID ForwardPossible)
 identifiedUnit = identifiedSomething (fail "Expected a valid unit name")
 
-identifiedDomainAndLabel :: ModelParser (OrForward ELabel ForwardPossible, OrForward NewDomainID ForwardPossible)
+identifiedDomainAndLabel :: ModelParser (OrForward ELabel ForwardPossible, DomainExpression ForwardPossible)
 identifiedDomainAndLabel = do
   ss <- mkSrcPoint
   fullPath <- pathSpec
@@ -487,7 +493,7 @@ identifiedDomainAndLabel = do
                              then (toplevelNamespace . psModel $ st, tail fullPath)
                              else (psCurrentNamespace st, fullPath)
   when (null relPath) (fail "Expected a valid domain name")
-  return (OFForward startNS ss' True relPath, OFForward startNS ss' True relPath)
+  return (OFForward startNS ss' True relPath, UseNewDomain (OFForward startNS ss' True relPath))
 
 traceToSource :: Eq b => (Model forward -> M.Map (BS.ByteString, b) b) -> Maybe BS.ByteString -> Model forward -> b -> ModelParser (Maybe BS.ByteString, Model forward, b)
 traceToSource f url model fid =
