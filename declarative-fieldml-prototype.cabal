@@ -17,17 +17,15 @@ source-repository head
     type:     git
     location: git@github.com:A1kmm/declarative-fieldml-prototype.git
 
-executable runfieldml
-  main-is: Data/FieldML/RunFieldML.hs
-  build-depends: cmdargs >= 0.5
-  ghc-prof-options: -auto-all -caf-all
+-- executable runfieldml
+--   main-is: Data/FieldML/RunFieldML.hs
+--   build-depends: cmdargs >= 0.5
+--   ghc-prof-options: -auto-all -caf-all
 
 library
+  ghc-options: -funbox-strict-fields
   ghc-prof-options: -auto-all -caf-all
-  build-depends: base >=3 && <5, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl
+  build-depends: base >=3 && <5, array, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl
+  build-tools: alex, happy
   exposed-modules:
-    Data.FieldML.Parser
-    Data.FieldML.Structure
-    Data.FieldML.StructureForwardInstances
-    Data.FieldML.StructureNoForwardInstances
-    Data.FieldML.InitialModel
+    Data.FieldML.LexicalAnalyser
