@@ -34,18 +34,27 @@ tokens :-
            l -> 1 + fromIntegral (LBS.length (last l))
      in possiblyCloseBlock)
   }
-  [\ \t\r\n]+ ;
-  "#".* ;
+  [\ \t\r\n]+ { \_ _ -> return []}
+  "#".* { \_ _ -> return [] }
   append { returnP TokAppend }
+  as { returnP TokAs }
   case { returnP TokCase }
+  class { returnP TokClass }
+  clone { returnP TokClone }
   connect { returnP TokConnect }
+  dimensionless { returnP TokDimensionless }
   domain { returnP TokDomain }
+  ensemble { returnP TokEnsemble }
+  from { returnP TokFrom }
   "=>" { returnP TokHeadSep }
   hiding { returnP TokHiding }
   import { returnP TokImport }
   lookup { returnP TokLookup }
+  my { returnP TokMy }
   namespace { returnP TokNamespace }
+  newbase { returnP TokNewbase }
   of { returnP TokOf }
+  "::" { returnP TokPathSep }
   "->" { returnP TokRightArrow }
   subset { returnP TokSubset }
   unit { returnP TokUnit }
@@ -59,20 +68,26 @@ tokens :-
   \] { returnP TokCloseSqBracket }
   \{ { returnP TokOpenCurlyBracket }
   \} { returnP TokCloseCurlyBracket }
+  \| / [^ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokPipe }
   (\-|\+)[0-9]+ \ [^Ee\.] { \(_, _, s) l -> return [TokSignedInt . fst . fromJust . LBSC.readInt $ s] }
   [0-9]+ \ [^Ee\.] { \(_, _, s) l -> return [TokInt . fst . fromJust . LBSC.readInt $ s] }
   (\-|\+)?[0-9]+(\.[0-9]+)?((E|e)(\+|\-)?[0-9]+)? {
     \(_, _, s) l -> return [TokReal . read . LBSC.unpack . LBS.take (fromIntegral l) $ s] }
   \~ / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokTilde }
-  [A-Za-z][A-Za-z0-9_']* { \(_, _, s) l -> return [NamedSymbol (LBS.take (fromIntegral l) s)] }
-  [ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(_, _, s) l -> return [NamedSymbol (LBS.take (fromIntegral l) s)] }
+  ":" { returnP TokColon }
+  R / [^A-Za-z0-9_'] { returnP TokR }
+  \_[A-Za-z0-9_']* { \(_, _, s) l -> return [TokScopedSymbol (LBS.take (fromIntegral l) s)] }
+  [A-Za-z][A-Za-z0-9_']* { \(_, _, s) l -> return [TokNamedSymbol (LBS.take (fromIntegral l) s)] }
+  [ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(_, _, s) l -> return [TokNamedSymbol (LBS.take (fromIntegral l) s)] }
+  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(_, _, s) l -> return [TokString (LBS.take (fromIntegral l) s)] }
 
 {
 type Byte = Word8
 type AlexInput = (AlexPosn, -- current position,
                   Char, -- previous char
                   LBS.ByteString) -- current input string
-                 
+
+alexKeepHistory = 2
 
 alexInputPrevChar :: AlexInput -> Char
 alexInputPrevChar (p,c,s) = c
@@ -86,7 +101,9 @@ alexGetByte (p,_,cs) | LBS.null cs = Nothing
                                     in p' `seq` cs' `seq` Just (b, (p', c, cs'))
 
 data AlexPosn = AlexPn !Int !Int !Int
-        deriving (Eq,Show)
+        deriving (Eq)
+instance Show AlexPosn where
+  showsPrec _ (AlexPn _ r c) = showString "line " . shows r . showString ", column " . shows c
 
 alexStartPos :: AlexPosn
 alexStartPos = AlexPn 0 1 1
@@ -98,6 +115,7 @@ alexMove (AlexPn a l c) _ = AlexPn (a+1) l (c+1)
 
 data AlexState = AlexState {
         alex_pos :: !AlexPosn, -- position at current input location
+        alex_last_pos :: ![AlexPosn], -- position going back in history
         alex_inp :: LBS.ByteString, -- the current input
         alex_chr :: !Char, -- the character before the input
         alex_scd :: !Int, -- the current startcode
@@ -110,6 +128,7 @@ data AlexState = AlexState {
 runAlex :: LBS.ByteString -> Alex a -> Either String a
 runAlex input (Alex f)
    = case f (AlexState {alex_pos = alexStartPos,
+                        alex_last_pos = take alexKeepHistory (repeat alexStartPos),
                         alex_inp = input,
                         alex_chr = '\n',
                         alex_scd = 0,
@@ -126,6 +145,7 @@ instance Monad Alex where
                                 Left msg -> Left msg
                                 Right (s',a) -> unAlex (k a) s'
   return a = Alex $ \s -> Right (s,a)
+  fail e = Alex $ \s -> Left e
 
 alexGetInput :: Alex AlexInput
 alexGetInput
@@ -136,6 +156,21 @@ alexSetInput :: AlexInput -> Alex ()
 alexSetInput (pos,c,inp)
  = Alex $ \s -> case s{alex_pos=pos,alex_chr=c,alex_inp=inp} of
                   s@(AlexState{}) -> Right (s, ())
+
+alexGetLastPos :: Alex [AlexPosn]
+alexGetLastPos
+ = Alex $ \s@AlexState{alex_last_pos=pos} ->
+        Right (s, pos)
+
+alexBackupPosition :: Alex ()
+alexBackupPosition
+ = Alex $ \s@AlexState{alex_pos=pos,alex_last_pos=hist} ->
+     Right (s{alex_last_pos=take alexKeepHistory (pos:hist)},())
+
+alexIgnoreOneBackup :: Alex ()
+alexIgnoreOneBackup
+ = Alex $ \s@AlexState{alex_last_pos=hist} ->
+     Right (s{alex_last_pos=tail hist},())
 
 alexError :: String -> Alex a
 alexError message = Alex $ \s -> Left message
@@ -165,7 +200,10 @@ alexPopTokenQueue = Alex $
     [] -> Right (s,Nothing)
     (h:t) -> Right (s{alex_token_queue=t}, Just h)
 
+alexWithContinuation cont = alexMonadScan >>= cont
+
 alexMonadScan = do
+  alexBackupPosition
   inp <- alexGetInput
   sc <- alexGetStartCode
   mt <- alexPopTokenQueue
@@ -173,17 +211,24 @@ alexMonadScan = do
     Just t -> return t
     Nothing -> do
       case (alexScan inp sc) :: (AlexReturn (AlexInput -> Int -> Alex [Token])) of
-        AlexEOF -> return TokCloseBlock
-        AlexError inp' -> alexError "lexical error"
+        AlexEOF -> do
+          bi <- alexGetBlockIndent
+          if bi == 0
+             then return TokEOF
+             else do
+               alexPopBlockIndent
+               return TokCloseBlock
+        AlexError inp' -> alexError $ "Lexical error at " ++ ((show . (\(pn,_,_) -> pn)) $ inp')
         AlexSkip inp' len -> do
           alexSetInput inp'
+          alexIgnoreOneBackup
           alexMonadScan
         AlexToken inp' len action -> do
           alexSetInput inp'
           r <- action inp len
           case r of
             (h:[]) -> return h
-            [] -> alexMonadScan
+            [] -> alexIgnoreOneBackup >> alexMonadScan
             (h:t) -> alexPutTokenQueue t >> return h
 
 -- -----------------------------------------------------------------------------
@@ -206,37 +251,55 @@ andBegin :: AlexAction result -> Int -> AlexAction result
 token :: (AlexInput -> Int -> token) -> AlexAction token
 token t input len = return (t input len)
 
-data Token = NamedSymbol LBS.ByteString |
-             TokAppend | TokAs |
-             TokCase | TokClone |
+data Token = -- Straight keywords and multi-char symbols
+             TokAppend |
+             TokAs |
+             TokCase |
+             TokClass |
+             TokClone |
              TokConnect | TokDimensionless |
-             TokDomain | TokFrom |
+             TokDomain |
+             TokEnsemble |
+             TokFrom |
              TokHeadSep | -- ^ The sequence =>
              TokHiding |
              TokImport |
              TokLookup |
+             TokMy |
              TokNamespace |
+             TokNewbase |
              TokOf |
+             TokPathSep | -- ^ The sequence ::
              TokRightArrow | -- ^ The sequence ->
              TokSubset |
              TokUnit |
              TokUsing |
              TokWhere |
-             TokEqual |
-             TokComma |
-             TokTilde |
-             TokOpenBracket |
+             -- Meaningful single character punctuation
              TokCloseBracket |
-             TokOpenSqBracket |
-             TokCloseSqBracket |
-             TokOpenCurlyBracket |
              TokCloseCurlyBracket |
-             -- | Hit when a token is encountered at a lower level of indent
-             --   than required for the current block (including at EOF)
-             TokCloseBlock |
+             TokCloseSqBracket |
+             TokColon |
+             TokComma |
+             TokEqual |
+             TokOpenBracket |
+             TokOpenCurlyBracket |
+             TokOpenSqBracket |
+             TokPipe |
+             TokR |
+             TokTilde |
+             -- Parsed values
+             TokInt Int |
+             TokNamedSymbol LBS.ByteString |
              TokReal Double |
+             TokScopedSymbol LBS.ByteString |
              TokSignedInt Int |
-             TokInt Int
+             -- Special tokens
+             -- | Hit when a token is encountered at a lower level of indent
+             --   than required for the current block
+             TokCloseBlock |
+             TokEOF | -- ^ End of file.
+             TokString LBS.ByteString
     deriving (Eq, Ord, Data, Show, Typeable)
 
 ignorePendingBytes :: AlexInput -> AlexInput

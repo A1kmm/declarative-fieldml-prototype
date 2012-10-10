@@ -27,5 +27,8 @@ library
   ghc-prof-options: -auto-all -caf-all
   build-depends: base >=3 && <5, array, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl
   build-tools: alex, happy
+  happy-options: -g -c -a -i
   exposed-modules:
     Data.FieldML.LexicalAnalyser
+    Data.FieldML.Parser
+    Data.FieldML.Level1Structure

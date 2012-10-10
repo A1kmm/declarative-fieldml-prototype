@@ -1,6 +1,12 @@
-namespace myns where
+namespace     myns where
   namespace testing where
     namespace myns where
     namespace xns where
-      import from test2 :: (yourns, multiimportns) as somens
+      import from "test2" :: (yourns, multiimportns) as somens
       namespace anothertop where
+      my x::R
+      my y
+      == (+ x y) R::1
+      ensemble (a | b | c) as e
+      domain d1 = (e::a -> I | e::b -> R | e::c -> R[metre])
+      domain d2 = (N::0 -> I | N::1 -> I)
