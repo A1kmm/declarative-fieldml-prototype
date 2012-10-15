@@ -129,7 +129,8 @@ whereNamespaceContents : Where namespaceContents { $2 }
 
 relOrAbsPath : Slash relPath0 { L1RelOrAbsPath True $2 }
              | relPath { L1RelOrAbsPath False $1 }
-relPath0 : PathSep sepBy(identifier,PathSep) { L1RelPath $2 }
+relPath0 : {- empty -} { L1RelPath []}
+  | PathSep sepBy1(identifier, PathSep) { L1RelPath $2 }
 relPath : sepBy1(identifier,PathSep) { L1RelPath $1 }
 
 relOrAbsPathPossiblyIntEnd
