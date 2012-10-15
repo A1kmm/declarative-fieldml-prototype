@@ -49,6 +49,7 @@ tokens :-
   "=>" { returnP TokHeadSep }
   hiding { returnP TokHiding }
   import { returnP TokImport }
+  let { returnP TokLet }
   lookup { returnP TokLookup }
   my { returnP TokMy }
   namespace { returnP TokNamespace }
@@ -69,10 +70,11 @@ tokens :-
   \{ { returnP TokOpenCurlyBracket }
   \} { returnP TokCloseCurlyBracket }
   \| / [^ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokPipe }
-  (\-|\+)[0-9]+ \ [^Ee\.] { \(_, _, s) l -> return [TokSignedInt . fst . fromJust . LBSC.readInt $ s] }
-  [0-9]+ \ [^Ee\.] { \(_, _, s) l -> return [TokInt . fst . fromJust . LBSC.readInt $ s] }
+  (\-|\+)[0-9]+ / [^Ee\.] { \(_, _, s) l -> return [TokSignedInt . fst . fromJust . LBSC.readInt $ s] }
+  [0-9]+ / [^Ee\.] { \(_, _, s) l -> return [TokInt . fst . fromJust . LBSC.readInt $ s] }
   (\-|\+)?[0-9]+(\.[0-9]+)?((E|e)(\+|\-)?[0-9]+)? {
     \(_, _, s) l -> return [TokReal . read . LBSC.unpack . LBS.take (fromIntegral l) $ s] }
+  \/ / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokSlash }
   \~ / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokTilde }
   ":" { returnP TokColon }
   R / [^A-Za-z0-9_'] { returnP TokR }
@@ -264,6 +266,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokHeadSep | -- ^ The sequence =>
              TokHiding |
              TokImport |
+             TokLet |
              TokLookup |
              TokMy |
              TokNamespace |
@@ -287,6 +290,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokOpenSqBracket |
              TokPipe |
              TokR |
+             TokSlash |
              TokTilde |
              -- Parsed values
              TokInt Int |

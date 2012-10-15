@@ -106,10 +106,12 @@ data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: Sr
                                            } |
                           L1DomainReference {
                             l1DomainExpressionSS :: SrcSpan,
-                            l1DomainExpressionRef :: L1RelOrAbsPath }
+                            -- Note: The right case is a parsing convenience -
+                            -- if it survives into the model, it is an error.
+                            l1DomainExpressionRef :: Either L1RelOrAbsPath (L1RelOrAbsPath, Int) }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
-data L1LabelledDomains = L1LabelledDomains [(L1RelOrAbsPath, L1DomainExpression)]
+data L1LabelledDomains = L1LabelledDomains [(Either L1RelOrAbsPath (L1RelOrAbsPath, Int), L1DomainExpression)]
                        deriving (Eq, Ord, Show, Data, Typeable)
 data L1UnitExpression = L1UnitExDimensionless { l1UnitExSS :: SrcSpan } |
                         L1UnitExRef { l1UnitExSS :: SrcSpan, l1UnitExRef :: L1RelOrAbsPath } |
@@ -149,7 +151,10 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                  l1ExValue :: L1Expression } |
                     L1ExCase { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
-                               l1ExValues :: [(L1RelOrAbsPath, L1Expression)] }
+                               l1ExValues :: [(L1RelOrAbsPath, L1Expression)] } |
+                    L1ExLet { l1ExSS :: SrcSpan,
+                               l1ExExpr :: L1Expression,
+                               l1ExClosure :: L1NamespaceContents }
                   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |

@@ -2,11 +2,12 @@
 module Main where
 
 import Data.FieldML.Parser
-import Data.FieldML.Structure
+import Data.FieldML.Level1Structure
 import System.Console.CmdArgs.Implicit
 import Data.Typeable
 import Data.Data
 import Control.Monad.Error
+import Network.Curl
 
 data RunFieldML = RunFieldML {
   includePaths :: [String],
@@ -22,8 +23,8 @@ main = do
   if modelURL flags == "omitted"
     then putStrLn "You must specify a modelURL"
     else do
-      r <- runErrorT $ loadModel (includePaths flags) (modelURL flags)
-      case r of
+      s <- snd `liftM` (curlGetString_ (modelURL flags) [])
+      case parseFieldML s of
         Left e -> do
           putStrLn "Compilation failed. Details follow:"
           putStrLn e

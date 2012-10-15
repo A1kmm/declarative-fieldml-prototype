@@ -1,4 +1,4 @@
-cabal-version:      >= 1.6
+cabal-version:      >= 1.8
 build-type:         Simple
 name:               declarative-fieldml-prototype
 version:            0.0.1
@@ -17,17 +17,16 @@ source-repository head
     type:     git
     location: git@github.com:A1kmm/declarative-fieldml-prototype.git
 
--- executable runfieldml
---   main-is: Data/FieldML/RunFieldML.hs
---   build-depends: cmdargs >= 0.5
---   ghc-prof-options: -auto-all -caf-all
+executable runfieldml
+   main-is: Data/FieldML/RunFieldML.hs
+   build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, curl, monads-tf, bytestring
+   ghc-prof-options: -auto-all -caf-all
 
 library
   ghc-options: -funbox-strict-fields
   ghc-prof-options: -auto-all -caf-all
   build-depends: base >=3 && <5, array, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl
   build-tools: alex, happy
-  happy-options: -g -c -a -i
   exposed-modules:
     Data.FieldML.LexicalAnalyser
     Data.FieldML.Parser
