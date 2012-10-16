@@ -51,7 +51,13 @@ data L1NamespaceStatement =
                  l1nsLabels :: [L1Identifier], 
                  l1nsAs :: Maybe L1Identifier } |
   L1NSUnit { l1nsSS :: SrcSpan,
-             l1nsUnitDefinition :: L1UnitDefinition }
+             l1nsUnitDefinition :: L1UnitDefinition } |
+  L1NSInstance { l1nsSS :: SrcSpan,
+                 l1nsInstanceOfClass :: L1RelOrAbsPath,
+                 l1nsClassArguments :: [L1DomainType],
+                 l1nsInstanceDomainFunctions :: [(L1Identifier, [L1DomainType], L1DomainExpression)],
+                 l1nsInstanceValues :: [L1Expression]
+               }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 -- | One entry for each parameter, parameter is L1Kind [] if it doesn't itself have parameters.
@@ -106,12 +112,12 @@ data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: Sr
                                            } |
                           L1DomainReference {
                             l1DomainExpressionSS :: SrcSpan,
-                            -- Note: The right case is a parsing convenience -
+                            -- Note: The IntEnd case is a parsing convenience -
                             -- if it survives into the model, it is an error.
-                            l1DomainExpressionRef :: Either L1RelOrAbsPath (L1RelOrAbsPath, Int) }
+                            l1DomainExpressionRef :: L1RelOrAbsPathPossiblyIntEnd }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
-data L1LabelledDomains = L1LabelledDomains [(Either L1RelOrAbsPath (L1RelOrAbsPath, Int), L1DomainExpression)]
+data L1LabelledDomains = L1LabelledDomains [(L1RelOrAbsPathPossiblyIntEnd, L1DomainExpression)]
                        deriving (Eq, Ord, Show, Data, Typeable)
 data L1UnitExpression = L1UnitExDimensionless { l1UnitExSS :: SrcSpan } |
                         L1UnitExRef { l1UnitExSS :: SrcSpan, l1UnitExRef :: L1RelOrAbsPath } |
@@ -128,30 +134,27 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                 l1ExOp :: L1Expression,
                                 l1ExArg :: L1Expression } |
                     L1ExReference { l1ExSS :: SrcSpan,
-                                    l1ExIdentifier :: L1RelOrAbsPath } |
+                                    l1ExIdentifier :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExBoundVariable { l1ExSS :: SrcSpan,
                                         l1ExScoped :: L1ScopedID } |
                     L1ExLiteralReal { l1ExSS :: SrcSpan,
                                       l1ExUnits :: L1UnitExpression,
                                       l1ExRealValue :: Double } |
-                    L1ExLiteralInt { l1ExSS :: SrcSpan,
-                                     l1ExIdentifier :: L1RelOrAbsPath,
-                                     l1ExIntValue :: Int } |
                     L1ExMkProduct { l1ExSS :: SrcSpan,
-                                    l1ExValues :: [(L1RelOrAbsPath, L1Expression)] } |
+                                    l1ExValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
                     L1ExMkUnion { l1ExSS :: SrcSpan,
-                                  l1ExLabel :: L1RelOrAbsPath,
+                                  l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
                                   l1ExValue :: L1Expression } |
                     L1ExProject { l1ExSS :: SrcSpan,
-                                  l1ExLabel :: L1RelOrAbsPath } |
+                                  l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExAppend { l1ExSS :: SrcSpan,
-                                 l1ExLabel :: L1RelOrAbsPath } |
+                                 l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExLambda { l1ExSS :: SrcSpan,
                                  l1ExBvar :: L1ScopedID,
                                  l1ExValue :: L1Expression } |
                     L1ExCase { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
-                               l1ExValues :: [(L1RelOrAbsPath, L1Expression)] } |
+                               l1ExValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
                     L1ExLet { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
                                l1ExClosure :: L1NamespaceContents }
@@ -162,6 +165,8 @@ data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |
                         deriving (Eq, Ord, Data, Typeable, Show)
 
 data L1RelOrAbsPath = L1RelOrAbsPath Bool L1RelPath deriving (Eq, Ord, Data, Typeable, Show)
+data L1RelOrAbsPathPossiblyIntEnd = L1RelOrAbsPathNoInt Bool L1RelPath 
+                                  | L1RelOrAbsPathInt Bool L1RelPath Int deriving (Eq, Ord, Data, Typeable, Show)
 data L1RelPath = L1RelPath [L1Identifier] deriving (Eq, Ord, Data, Typeable, Show)
 newtype L1Identifier = L1Identifier LBS.ByteString deriving (Eq, Ord, Data, Typeable, Show)
 newtype L1ScopedID = L1ScopedID LBS.ByteString deriving (Eq, Ord, Data, Typeable, Show)

@@ -49,18 +49,19 @@ tokens :-
   "=>" { returnP TokHeadSep }
   hiding { returnP TokHiding }
   import { returnP TokImport }
+  instance { returnP TokInstance }
   let { returnP TokLet }
   lookup { returnP TokLookup }
   my { returnP TokMy }
   namespace { returnP TokNamespace }
   newbase { returnP TokNewbase }
-  of { returnP TokOf }
   "::" { returnP TokPathSep }
   "->" { returnP TokRightArrow }
   subset { returnP TokSubset }
   unit { returnP TokUnit }
   using { returnP TokUsing }
   where { returnP TokWhere }
+  \\ { returnP TokForwardSlash}
   \= / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokEqual }
   \, { returnP TokComma }
   \( { returnP TokOpenBracket }
@@ -266,12 +267,12 @@ data Token = -- Straight keywords and multi-char symbols
              TokHeadSep | -- ^ The sequence =>
              TokHiding |
              TokImport |
+             TokInstance |
              TokLet |
              TokLookup |
              TokMy |
              TokNamespace |
              TokNewbase |
-             TokOf |
              TokPathSep | -- ^ The sequence ::
              TokRightArrow | -- ^ The sequence ->
              TokSubset |
@@ -285,6 +286,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokColon |
              TokComma |
              TokEqual |
+             TokForwardSlash |
              TokOpenBracket |
              TokOpenCurlyBracket |
              TokOpenSqBracket |

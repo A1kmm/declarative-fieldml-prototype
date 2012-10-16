@@ -5,6 +5,7 @@ import Data.FieldML.LexicalAnalyser
 import Data.FieldML.Level1Structure
 import Control.Monad
 import Data.Maybe
+import Data.List
 import qualified Data.ByteString.Lazy as LBS
 }
 %monad { Alex }
@@ -24,12 +25,12 @@ import qualified Data.ByteString.Lazy as LBS
        HeadSep { TokHeadSep }
        Hiding { TokHiding }
        Import { TokImport }
+       Instance { TokInstance }
        Let { TokLet }
        Lookup { TokLookup }
        My { TokMy }
        Namespace { TokNamespace }
        Newbase { TokNewbase }
-       Of { TokOf }
        PathSep { TokPathSep }
        RightArrow { TokRightArrow }
        Subset { TokSubset }
@@ -47,6 +48,7 @@ import qualified Data.ByteString.Lazy as LBS
        Pipe { TokPipe }
        R { TokR }
        Slash { TokSlash }
+       ForwardSlash { TokForwardSlash }
        Tilde { TokTilde }
        Int { TokInt $$ }
        NamedSymbol { TokNamedSymbol $$ }
@@ -58,7 +60,8 @@ import qualified Data.ByteString.Lazy as LBS
 
 %left lowerEmpty
 %left lowerSep
-%left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt
+%left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup
+%left ForwardSlash
 %left Comma Pipe
 %left OpenBracket
 %left preferOpenSqBracket
@@ -90,13 +93,16 @@ namespaceStatement : Import startBlock maybe(fromURL) relOrAbsPath maybe(identLi
   }
                    | Let startBlock expression closeBlock { L1NSAssertion $2 $3 }
                    | My startBlock identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue $2 $3 $4 }
-                   | Class startBlock identifier orEmpty(classParameters) maybe(classContents) closeBlock {
+                   | Class startBlock identifier classParameters maybe(classContents) closeBlock {
                        L1NSClass $2 $3 $4 (maybe [] fst $5) (maybe [] snd $5)
                                                                                                           }
                    | Ensemble startBlock OpenCurlyBracket sepBy1(identifier, Comma) CloseCurlyBracket maybe(asId) closeBlock {
                        L1NSEnsemble $2 $4 $6
                        }
                    | Unit startBlock unitDefinition closeBlock { L1NSUnit $2 $3 }
+                   | Instance startBlock relOrAbsPath OpenBracket sepBy(domainType,Comma) CloseBracket maybe(instanceContents) closeBlock {
+                       L1NSInstance (twoPosToSpan $2 $8) $3 $5 (maybe [] fst $7) (maybe [] snd $7)
+                     }
 
 classParameters : OpenBracket sepBy(classParameter,Comma) CloseBracket { $2 }
 classParameter : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind []) $2) }
@@ -119,6 +125,11 @@ classDomainFunction : Domain startBlock identifier OpenBracket sepBy1(scopedId,C
 classValues : many(classValue) { $1 }
 classValue : identifier domainTypeAnnotation { ($1, $2) }
 
+instanceContents : Where many(instanceDomainFunction) many(instanceValue) { ($2, $3) }
+instanceDomainFunction : Domain startBlock identifier OpenBracket sepBy1(domainType, Comma) CloseBracket Equal domainExpression closeBlock {
+    ($3, $5, $8)
+  }
+instanceValue : Let startBlock expression closeBlock { $3 }
 domainTypeAnnotation : PathSep domainType { $2 }
 
 fromURL : From String { $2 }
@@ -134,15 +145,15 @@ relPath0 : {- empty -} { L1RelPath []}
 relPath : sepBy1(identifier,PathSep) { L1RelPath $1 }
 
 relOrAbsPathPossiblyIntEnd
-  :: { Either L1RelOrAbsPath (L1RelOrAbsPath, Int) }
+  :: { L1RelOrAbsPathPossiblyIntEnd }
   : Slash relPath0PossiblyIntEndRev {
     case $2 of
-       Left v -> Left (L1RelOrAbsPath True (L1RelPath $ reverse v))
-       Right (v, i) -> Right (L1RelOrAbsPath True (L1RelPath $ reverse v), i) }
+       Left v -> L1RelOrAbsPathNoInt True (L1RelPath $ reverse v)
+       Right (v, i) -> L1RelOrAbsPathInt True (L1RelPath $ reverse v) i }
   | relPathPossiblyIntEndRev {
     case $1 of
-      Left v -> Left (L1RelOrAbsPath False (L1RelPath . reverse $  v))
-      Right (v, i) -> Right (L1RelOrAbsPath False (L1RelPath . reverse $ v), i)
+      Left v -> L1RelOrAbsPathNoInt False (L1RelPath . reverse $  v)
+      Right (v, i) -> L1RelOrAbsPathInt False (L1RelPath . reverse $ v) i
     }
 relPath0PossiblyIntEndRev
   :: { Either [L1Identifier] ([L1Identifier], Int) }
@@ -189,8 +200,8 @@ domainExpression :: { L1DomainExpression }
 domainExprStartsWithPath
   : OpenBracket sepBy1(domainExpression,Comma) CloseBracket getPos {
       \startPos path' -> case path' of
-                             Left path -> return $ L1DomainFunctionEvaluate (twoPosToSpan startPos $4) path $2
-                             Right _ -> fail $ "Unexpected number label at " ++ show $4
+                             L1RelOrAbsPathNoInt ra p -> return $ L1DomainFunctionEvaluate (twoPosToSpan startPos $4) (L1RelOrAbsPath ra p) $2
+                             L1RelOrAbsPathInt _ _ _ -> fail $ "Unexpected number label at " ++ show $4
     }
   | {- empty -} { \startPos path -> return $ L1DomainReference startPos path }
 
@@ -219,7 +230,7 @@ bracketDomainExpression : {- empty -} { \ex _ -> return ex } -- Just a bracketed
 
 labelledDomains(sep) :: { L1LabelledDomains }
                      : sepBy(labelledDomain,sep) { L1LabelledDomains $1 }
-labelledDomain :: { (Either L1RelOrAbsPath (L1RelOrAbsPath, Int), L1DomainExpression) }
+labelledDomain :: { (L1RelOrAbsPathPossiblyIntEnd, L1DomainExpression) }
                : relOrAbsPathPossiblyIntEnd Colon domainExpression { ($1, $3) }
                | relOrAbsPathPossiblyIntEnd getPos { ($1, L1DomainReference $2 $1) }
 
@@ -248,24 +259,34 @@ integer : SignedInt { fromIntegral $1 }
 expression :: { L1Expression }
            : expression applyOrWhereOrAs %prec expressionCombine { $2 $1 }
            | relOrAbsPathPossiblyIntEnd getPos %prec expressionCombine {
-             case $1 of
-               Left v -> L1ExReference $2 v
-               Right (v, i) -> L1ExLiteralInt $2 v i
+               L1ExReference $2 $1
              }
            | scopedId getPos %prec expressionCombine { L1ExBoundVariable $2 $1 }
            | OpenBracket expression CloseBracket { $2 }
            | R getPos maybe(bracketedUnits) PathSep double %prec expressionCombine { L1ExLiteralReal $2 (fromMaybe (L1UnitExDimensionless $2) $3) $5 }
            | OpenCurlyBracket getPos sepBy(labelledExpression,Comma) CloseCurlyBracket getPos  %prec expressionCombine { L1ExMkProduct (twoPosToSpan $2 $5) $3 }
+           | Lookup getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { L1ExProject $2 $3 }
+           | Append getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { L1ExAppend $2 $3 }
+           | ForwardSlash getPos many(scopedId) RightArrow expression %prec expressionCombine {
+               foldl' (\ex sv -> L1ExLambda $2 sv ex) $5 $3
+             }
+           | Case startBlock expression many(expressionCase) closeBlock {
+               L1ExCase $2 $3 $4
+             }
+
+expressionCase : relOrAbsPathPossiblyIntEnd RightArrow startBlock expression closeBlock {
+    ($1, $4)
+  }
 
 applyOrWhereOrAs : Where getPos namespaceContents %prec expressionCombine { \expr -> L1ExLet $2 expr $3 }
   | expression getPos %prec expressionCombine { \expr -> L1ExApply $2 expr $1 }
-  | As getPos relOrAbsPath %prec expressionCombine { \expr -> L1ExMkUnion $2 $3 expr }
+  | As getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { \expr -> L1ExMkUnion $2 $3 expr }
 
 unitDefinition :: { L1UnitDefinition }
   : Newbase getPos { L1UnitDefNewBase $2 }
   | unitExpression getPos { L1UnitDefUnitExpr $2 $1 }
 
-labelledExpression : relOrAbsPath Colon expression { ($1, $3) }
+labelledExpression : relOrAbsPathPossiblyIntEnd Colon expression { ($1, $3) }
 
 getPos : {- empty -} %prec getPos {% (\((AlexPn _ row col):_) -> SrcSpan { srcFile = "input",
                                                                            srcStartRow = row,
@@ -291,7 +312,7 @@ maybe(x) : x           { Just $1 }
 
 many(x) : manyRev(x) { reverse $1 }
 manyRev(x) : manyRev(x) x { $2:$1 }
-           | {- empty -} { [] }
+           | {- empty -} %prec lowerSep { [] }
 
 sepBy(x,sep) : orEmpty(sepBy1(x,sep)) { $1 }
 sepBy1(x,sep) : sepBy1Rev(x,sep) { reverse ($1) }

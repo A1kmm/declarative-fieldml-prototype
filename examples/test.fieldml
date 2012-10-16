@@ -10,3 +10,11 @@ namespace     myns where
       ensemble {a,  b, c} as e
       domain d1 = (e::a: I | e::b: R[dimensionless] | e::c: R[metre])
       domain d2 = (N::0: I | N::1: I)
+class Eq (_x) where
+  == :: _x -> _x -> Boolean
+class MetricSpace (_space) where
+  domain MetricType (_space)
+  distanceBetween :: _space -> _space -> MetricType
+instance MetricSpace (R[_any]) where
+  domain MetricType (R[_any]) = R[_any * _any]
+  let == distanceBetween (\_v1 _v2 -> (- _v1 _v2) ** R::2)
