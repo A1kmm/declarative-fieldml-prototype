@@ -204,7 +204,8 @@ alexPopBlockIndent = Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{al
 
 alexPushBlockIndent :: Int -> Alex ()
 alexPushBlockIndent h = do
-  -- Debug.Trace.trace ("alexPushBlockIndent " ++ (show h)) $! Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{alex_block_indent=(h, 0):abi}, ())
+  -- Debug.Trace.trace ("alexPushBlockIndent " ++ (show h)) $!
+  Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{alex_block_indent=(h, 0):abi}, ())
   alexFixLookaheadBracket
 
 alexPutTokenQueue :: [Token] -> Alex ()
