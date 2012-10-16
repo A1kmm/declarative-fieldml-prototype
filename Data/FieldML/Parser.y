@@ -9,54 +9,55 @@ import Data.List
 import qualified Data.ByteString.Lazy as LBS
 }
 %monad { Alex }
-%lexer { alexWithContinuation } { TokEOF }
+%lexer { alexWithContinuation } { TokEOF _ }
 %tokentype { Token }
-%token Append { TokAppend }
-       As { TokAs }
-       Case { TokCase }
-       Class { TokClass }
-       Clone { TokClone }
-       Colon { TokColon }
-       Connect { TokConnect }
-       Dimensionless { TokDimensionless }
-       Domain { TokDomain }
-       Ensemble { TokEnsemble }
-       From { TokFrom }
-       HeadSep { TokHeadSep }
-       Hiding { TokHiding }
-       Import { TokImport }
-       Instance { TokInstance }
-       Let { TokLet }
-       Lookup { TokLookup }
-       My { TokMy }
-       Namespace { TokNamespace }
-       Newbase { TokNewbase }
-       PathSep { TokPathSep }
-       RightArrow { TokRightArrow }
-       Subset { TokSubset }
-       Unit { TokUnit }
-       Using { TokUsing }
-       Where { TokWhere }
-       CloseBracket { TokCloseBracket }
-       CloseCurlyBracket { TokCloseCurlyBracket }
-       CloseSqBracket { TokCloseSqBracket }
-       Comma { TokComma }
-       Equal { TokEqual }
-       OpenBracket { TokOpenBracket }
-       OpenCurlyBracket { TokOpenCurlyBracket }
-       OpenSqBracket { TokOpenSqBracket }
-       Pipe { TokPipe }
-       R { TokR }
-       Slash { TokSlash }
-       ForwardSlash { TokForwardSlash }
-       Tilde { TokTilde }
+%token Append { TokAppend $$ }
+       As { TokAs $$ }
+       Case { TokCase $$ }
+       Class { TokClass $$ }
+       Clone { TokClone $$ }
+       Colon { TokColon $$ }
+       Connect { TokConnect $$ }
+       Dimensionless { TokDimensionless $$ }
+       Domain { TokDomain $$ }
+       Ensemble { TokEnsemble $$ }
+       From { TokFrom $$ }
+       HeadSep { TokHeadSep $$ }
+       Hiding { TokHiding $$ }
+       Import { TokImport $$ }
+       Instance { TokInstance $$ }
+       Let { TokLet $$ }
+       Lookup { TokLookup $$ }
+       My { TokMy $$ }
+       Namespace { TokNamespace $$ }
+       Newbase { TokNewbase $$ }
+       PathSep { TokPathSep $$ }
+       RightArrow { TokRightArrow $$ }
+       Subset { TokSubset $$ }
+       Unit { TokUnit $$ }
+       Using { TokUsing $$ }
+       Where { TokWhere $$ }
+       CloseBracket { TokCloseBracket $$ }
+       CloseCurlyBracket { TokCloseCurlyBracket $$ }
+       CloseSqBracket { TokCloseSqBracket $$ }
+       Comma { TokComma $$ }
+       Equal { TokEqual $$ }
+       Of { TokOf $$ }
+       OpenBracket { TokOpenBracket $$ }
+       OpenCurlyBracket { TokOpenCurlyBracket $$ }
+       OpenSqBracket { TokOpenSqBracket $$ }
+       Pipe { TokPipe $$ }
+       R { TokR $$ }
+       Slash { TokSlash $$ }
+       ForwardSlash { TokForwardSlash $$ }
+       Tilde { TokTilde $$ }
        Int { TokInt $$ }
        NamedSymbol { TokNamedSymbol $$ }
        Real { TokReal $$ }
        ScopedSymbol { TokScopedSymbol $$ }
        SignedInt { TokSignedInt $$ }
        String { TokString $$ }
-       CloseBlock { TokCloseBlock }
+       CloseBlock { TokCloseBlock $$ }
 
 %left lowerEmpty
 %left lowerSep
@@ -72,7 +73,6 @@ import qualified Data.ByteString.Lazy as LBS
 %right unitExprEnding
 %left highestEmpty
 %left highestSep
-%left getPos
 
 %name happyParseFieldML
 %error { happyError }
@@ -80,29 +80,31 @@ import qualified Data.ByteString.Lazy as LBS
 
 main : namespaceContents { $1 }
 
-namespaceContents : many(namespaceStatement) { L1NamespaceContents $1 }
+namespaceContents
+  : many(namespaceStatement) { L1NamespaceContents $1 }
 
-namespaceStatement : Import startBlock maybe(fromURL) relOrAbsPath maybe(identList) maybe(hidingList) maybe(asId) closeBlock {
-    L1NSImport (twoPosToSpan $2 $8) $3 $4 $5 $6 $7
-  }
-                   | Namespace startBlock identifier Where namespaceContents closeBlock {
-    L1NSNamespace (twoPosToSpan $2 $6) $3 $5
-  }
-                   | Domain startBlock identifier Equal domainDefinition orEmptyNSContents(whereNamespaceContents) closeBlock {
-    L1NSDomain (twoPosToSpan $2 $7) $3 $5 $6
-  }
-                   | Let startBlock expression closeBlock { L1NSAssertion $2 $3 }
-                   | My startBlock identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue $2 $3 $4 }
-                   | Class startBlock identifier classParameters maybe(classContents) closeBlock {
-                       L1NSClass $2 $3 $4 (maybe [] fst $5) (maybe [] snd $5)
-                                                                                                          }
-                   | Ensemble startBlock OpenCurlyBracket sepBy1(identifier, Comma) CloseCurlyBracket maybe(asId) closeBlock {
-                       L1NSEnsemble $2 $4 $6
-                       }
-                   | Unit startBlock unitDefinition closeBlock { L1NSUnit $2 $3 }
-                   | Instance startBlock relOrAbsPath OpenBracket sepBy(domainType,Comma) CloseBracket maybe(instanceContents) closeBlock {
-                       L1NSInstance (twoPosToSpan $2 $8) $3 $5 (maybe [] fst $7) (maybe [] snd $7)
-                     }
+namespaceStatement
+  : startBlock(Import) maybe(fromURL) relOrAbsPath maybe(identList) maybe(hidingList) maybe(asId) closeBlock {
+      L1NSImport (twoPosToSpan $1 $7) $2 $3 $4 $5 $6
+    }
+  | startBlock(Namespace) identifier Where namespaceContents closeBlock {
+      L1NSNamespace (twoPosToSpan $1 $5) $2 $4
+    }
+  | startBlock(Domain) identifier many(scopedId) Equal domainDefinition orEmptyNSContents(whereNamespaceContents) closeBlock {
+      L1NSDomain (twoPosToSpan $1 $7) $2 $3 $5 $6
+    }
+  | startBlock(Let) expression closeBlock { L1NSAssertion (twoPosToSpan $1 $3) $2 }
+  | startBlock(My) identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue (twoPosToSpan $1 $4) $2 $3 }
+  | startBlock(Class) identifier classParameters maybe(classContents) closeBlock {
+      L1NSClass (twoPosToSpan $1 $5) $2 $3 (maybe [] fst $4) (maybe [] snd $4)
+    }
+  | startBlock(Ensemble) OpenCurlyBracket sepBy1(identifier, Comma) CloseCurlyBracket maybe(asId) closeBlock {
+      L1NSEnsemble (twoPosToSpan $1 $6) $3 $5
+    }
+  | startBlock(Unit) identifier Equal unitDefinition closeBlock { L1NSUnit (twoPosToSpan $1 $5) $2 $4 }
+  | startBlock(Instance) relOrAbsPath OpenBracket sepBy(domainType,Comma) CloseBracket maybe(instanceContents) closeBlock {
+      L1NSInstance (twoPosToSpan $1 $7) $2 $4 (maybe [] fst $6) (maybe [] snd $6)
+    }
 
 classParameters : OpenBracket sepBy(classParameter,Comma) CloseBracket { $2 }
 classParameter : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind []) $2) }
@@ -110,7 +112,7 @@ classParameter : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind []) $2)
 kindAnnotation : PathSep kindSpec { $2 }
 kindSpec
   : NamedSymbol %prec kindSpec
-       {% if $1 == "*"
+       {% if snd $1 == "*"
             then return (L1Kind [])
             else happyError (TokNamedSymbol $1)
        }
@@ -119,49 +121,60 @@ kindSpec
 
 classContents : Where classDomainFunctions classValues { ($2, $3) }
 classDomainFunctions : many(classDomainFunction) { $1 }
-classDomainFunction : Domain startBlock identifier OpenBracket sepBy1(scopedId,Comma) CloseBracket closeBlock {
-   ($3, length $5)
+classDomainFunction : startBlock(Domain) identifier OpenBracket sepBy1(scopedId,Comma) CloseBracket closeBlock {
+   ($2, length $4)
   }
 classValues : many(classValue) { $1 }
 classValue : identifier domainTypeAnnotation { ($1, $2) }
 
 instanceContents : Where many(instanceDomainFunction) many(instanceValue) { ($2, $3) }
-instanceDomainFunction : Domain startBlock identifier OpenBracket sepBy1(domainType, Comma) CloseBracket Equal domainExpression closeBlock {
-    ($3, $5, $8)
+instanceDomainFunction : startBlock(Domain) identifier OpenBracket sepBy1(domainType, Comma) CloseBracket Equal domainExpression closeBlock {
+    ($2, $4, $7)
   }
-instanceValue : Let startBlock expression closeBlock { $3 }
+instanceValue : startBlock(Let) expression closeBlock { $2 }
 domainTypeAnnotation : PathSep domainType { $2 }
 
-fromURL : From String { $2 }
+fromURL : From String { snd $2 }
 identList :: { [L1Identifier] }
           : OpenBracket sepBy(identifier,Comma) CloseBracket { $2 }
 hidingList : Hiding identList { $2 }
 whereNamespaceContents : Where namespaceContents { $2 }
 
-relOrAbsPath : Slash relPath0 { L1RelOrAbsPath True $2 }
-             | relPath { L1RelOrAbsPath False $1 }
-relPath0 : {- empty -} { L1RelPath []}
-  | PathSep sepBy1(identifier, PathSep) { L1RelPath $2 }
-relPath : sepBy1(identifier,PathSep) { L1RelPath $1 }
+relOrAbsPath : Slash relPath0 { L1RelOrAbsPath (twoPosToSpan (alexPosToSrcPoint $1) (l1RelPathSS $2)) True $2 }
+             | relPath { L1RelOrAbsPath (l1RelPathSS $1) False $1 }
+relPath0 : {- empty -} {% do
+                           (pos, _, _) <- alexGetInput                        
+                           return $ L1RelPath (alexPosToSrcPoint pos) []
+                       }
+  | PathSep sepBy1(identifier, PathSep) { L1RelPath (twoPosToSpan (alexPosToSrcPoint $1) (l1IdSS (last $2))) $2 }
+relPath : sepBy1(identifier,PathSep) { L1RelPath (twoPosToSpan (l1IdSS $ head $1) (l1IdSS $ last $1)) $1 }
 
 relOrAbsPathPossiblyIntEnd
   :: { L1RelOrAbsPathPossiblyIntEnd }
   : Slash relPath0PossiblyIntEndRev {
-    case $2 of
-       Left v -> L1RelOrAbsPathNoInt True (L1RelPath $ reverse v)
-       Right (v, i) -> L1RelOrAbsPathInt True (L1RelPath $ reverse v) i }
+      case $2 of
+        Left v -> L1RelOrAbsPathNoInt (if null v then alexPosToSrcPoint $1
+                                                 else twoPosToSpan (alexPosToSrcPoint $1)
+                                                                   (l1IdSS $ head v))
+                                      True (L1RelPath (SrcSpan "-" 0 0 0 0) $ reverse v)
+        Right (v, (ss, i)) ->
+          L1RelOrAbsPathInt (twoPosToSpan (alexPosToSrcPoint $1)
+                                          ss) True (L1RelPath (SrcSpan "-" 0 0 0 0) $ reverse v) i
+     }
   | relPathPossiblyIntEndRev {
     case $1 of
-      Left v -> L1RelOrAbsPathNoInt False (L1RelPath . reverse $  v)
-      Right (v, i) -> L1RelOrAbsPathInt False (L1RelPath . reverse $ v) i
+      Left v -> L1RelOrAbsPathNoInt (twoPosToSpan (l1IdSS $ last v) (l1IdSS $ head v))
+                                    False (L1RelPath (SrcSpan "-" 0 0 0 0) (reverse v))
+      Right (v, (ss, i)) -> L1RelOrAbsPathInt (if null v then ss else twoPosToSpan (l1IdSS $ last v) ss)
+                                              False (L1RelPath (SrcSpan "-" 0 0 0 0) (reverse v)) i
     }
 relPath0PossiblyIntEndRev
-  :: { Either [L1Identifier] ([L1Identifier], Int) }
+  :: { Either [L1Identifier] ([L1Identifier], (SrcSpan, Int)) }
   : PathSep relPathPossiblyIntEndRev { $2 }
   | {- empty -} { Left [] }
 relPathPossiblyIntEndRev : relPathPossiblyIntEndRev PathSep identifierOrInteger {%
   case ($1, $3) of
-    (Right _, _) -> happyError TokPathSep
+    (Right _, _) -> happyError (TokPathSep $2)
     (Left vl, Left v)  -> return $ Left (v:vl)
     (Left vl, Right i) -> return $ Right (vl, i)
                                                                                 }
@@ -169,41 +182,54 @@ relPathPossiblyIntEndRev : relPathPossiblyIntEndRev PathSep identifierOrInteger 
 identifierOrInteger : identifier { Left $1 }
                     | integer { Right $1 }
 
-identifier : NamedSymbol { L1Identifier $1 }
-scopedId : ScopedSymbol { L1ScopedID $1 }
+identifier : NamedSymbol { L1Identifier (alexPosToSrcPoint $ fst $1) (snd $1) }
+scopedId : ScopedSymbol { L1ScopedID (alexPosToSrcPoint $ fst $1) (snd $1) }
 asId : As identifier { $2 }
 
-domainDefinition : Clone getPos domainType getPos { L1CloneDomain (twoPosToSpan $2 $4) $3 }
-                 | Subset startBlock getPos domainType Using expression getPos closeBlock { L1SubsetDomain (twoPosToSpan $3 $7) $4 $6 }
-                 | Connect startBlock getPos domainType Using expression getPos closeBlock { L1ConnectDomain (twoPosToSpan $3 $7) $4 $6 }
-                 | domainType getPos { L1DomainDefDomainType $2 $1 }
+domainDefinition : Clone domainType { L1CloneDomain (alexPosToSrcPoint $1) $2 }
+                 | startBlock(Subset) domainType Using expression closeBlock { L1SubsetDomain (twoPosToSpan $1 $5) $2 $4 }
+                 | startBlock(Connect) domainType Using expression closeBlock { L1ConnectDomain (twoPosToSpan $1 $5) $2 $4 }
+                 | domainType { L1DomainDefDomainType (l1DomainTypeSS $1) $1 }
 
-domainType : getPos orEmpty(domainHead) domainExpression getPos { L1DomainType (twoPosToSpan $1 $4) $2 $3 }
-domainHead : OpenSqBracket sepBy(domainClassRelation,Comma) CloseSqBracket HeadSep { $2 }
+domainType : domainHead domainExpression { L1DomainType (twoPosToSpan (fst $1) (l1DomainExpressionSS $2)) (snd $1) $2 }
+domainHead
+  : OpenSqBracket sepBy(domainClassRelation,Comma) CloseSqBracket HeadSep { (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $4), $2) }
+  | {- empty -} {% do
+                    (pos, _, _) <- alexGetInput
+                    return (alexPosToSrcPoint pos, [])
+                }
 domainClassRelation : Unit unitExpression Tilde unitExpression { L1DCRUnitConstraint $2 $4 }
                     | Class relOrAbsPath OpenBracket sepBy(domainExpression,Comma) CloseBracket { L1DCRRelation $2 $4 }
                     | domainExpression Tilde domainExpression { L1DCREquality $1 $3 }
 
-domainExpression :: { L1DomainExpression }
-                 : OpenCurlyBracket getPos labelledDomains(Comma) getPos CloseCurlyBracket { L1DomainExpressionProduct (twoPosToSpan $2 $4) $3 }
-                 | OpenBracket getPos domainExpression bracketDomainExpression getPos CloseBracket {% $4 $3 (twoPosToSpan $2 $5) }
-                 | domainExpression RightArrow getPos domainExpression { L1DomainExpressionFieldSignature $3 $1 $4 }
-                 | domainExpression OpenSqBracket getPos sepBy1(domainApplyArg,Comma) CloseSqBracket getPos %prec OpenSqBracket {
-                     let ss = twoPosToSpan $3 $6 in
-                       foldl (\d (sv,ex) -> L1DomainExpressionApply ss d sv ex) $1 $4
-                   }
-                 | R maybeBracketedUnits getPos {
-                   L1DomainExpressionReal $3 $2 }
-                 | relOrAbsPathPossiblyIntEnd domainExprStartsWithPath getPos {% $2 $3 $1 }
-                 | scopedId getPos { L1DomainVariableRef $2 $1 }
+domainExpression
+  :: { L1DomainExpression }
+  : OpenCurlyBracket labelledDomains(Comma) CloseCurlyBracket {
+      L1DomainExpressionProduct (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $3)) $2 
+    }
+  | OpenBracket domainExpression bracketDomainExpression CloseBracket {%
+      $3 $2 (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $4))
+                                                                      }
+  | domainExpression RightArrow domainExpression { L1DomainExpressionFieldSignature (twoPosToSpan (l1DomainExpressionSS $1) (l1DomainExpressionSS $3))
+                                                                                    $1 $3 }
+  | domainExpression OpenSqBracket sepBy1(domainApplyArg,Comma) CloseSqBracket %prec OpenSqBracket {
+    let ss = twoPosToSpan (l1DomainExpressionSS $1) (alexPosToSrcPoint $4) in
+      foldl (\d (sv,ex) -> L1DomainExpressionApply ss d sv ex) $1 $3
+    }
+  | R maybeBracketedUnits {
+      L1DomainExpressionReal (alexPosToSrcPoint $1) $2
+    }
+  | relOrAbsPathPossiblyIntEnd domainExprStartsWithPath {% $2 $1 }
+  | scopedId { L1DomainVariableRef (l1ScopedIdSS $1) $1 }
 
 domainExprStartsWithPath
-  : OpenBracket sepBy1(domainExpression,Comma) CloseBracket getPos {
-      \startPos path' -> case path' of
-                             L1RelOrAbsPathNoInt ra p -> return $ L1DomainFunctionEvaluate (twoPosToSpan startPos $4) (L1RelOrAbsPath ra p) $2
-                             L1RelOrAbsPathInt _ _ _ -> fail $ "Unexpected number label at " ++ show $4
+  : OpenBracket sepBy1(domainExpression,Comma) CloseBracket {
+      \path' -> case path' of
+        L1RelOrAbsPathNoInt ss ra p -> return $ L1DomainFunctionEvaluate (twoPosToSpan ss (alexPosToSrcPoint $3))
+                                                                         (L1RelOrAbsPath ss ra p) $2
+        L1RelOrAbsPathInt ss _ _ _ -> fail $ "Unexpected number label at " ++ show ss
     }
-  | {- empty -} { \startPos path -> return $ L1DomainReference startPos path }
+  | {- empty -} { \path -> return $ L1DomainReference (l1RelOrAbsPIESS path) path }
 
 maybeBracketedUnits : bracketedUnits %prec OpenSqBracket { $1 }
                     | {- empty -} %prec preferOpenSqBracket { L1UnitExDimensionless (SrcSpan "built-in" 0 0 0 0) }
@@ -218,94 +244,105 @@ bracketDomainExpression : {- empty -} { \ex _ -> return ex } -- Just a bracketed
                               case shouldBeLabel of
                                 (L1DomainReference _ label) -> return $
                                    L1DomainExpressionDisjointUnion ss (L1LabelledDomains ((label, $2):lTail))
-                                _ -> happyError TokColon
+                                _ -> happyError (TokColon $1)
                           }
                         | Pipe labelledDomains(Pipe) {\shouldBeLabel ss ->
                             let (L1LabelledDomains lTail) = $2 in
                               case shouldBeLabel of
                                 (L1DomainReference _ label) -> return $
                                    L1DomainExpressionDisjointUnion ss (L1LabelledDomains ((label, shouldBeLabel):lTail))
-                                _ -> happyError TokPipe
+                                _ -> happyError (TokPipe $1)
                                                }
 
 labelledDomains(sep) :: { L1LabelledDomains }
                      : sepBy(labelledDomain,sep) { L1LabelledDomains $1 }
 labelledDomain :: { (L1RelOrAbsPathPossiblyIntEnd, L1DomainExpression) }
                : relOrAbsPathPossiblyIntEnd Colon domainExpression { ($1, $3) }
-               | relOrAbsPathPossiblyIntEnd getPos { ($1, L1DomainReference $2 $1) }
+               | relOrAbsPathPossiblyIntEnd { ($1, L1DomainReference (l1RelOrAbsPIESS $1) $1) }
 
-unitExpression : Dimensionless getPos { L1UnitExDimensionless $2 }
-               | relOrAbsPath getPos { L1UnitExRef $2 $1 }
-               | double NamedSymbol getPos unitExpression %prec unitExpression {% do
-                 (when ($2 /= "*") . fail $ "Expected * " ++ " at " ++ (show $3))
-                 return $ L1UnitScalarMup $3 $1 $4
-                                                          }
-               | unitExpression NamedSymbol unitExprEnding getPos {%
-                 case $3 of
-                   (Left ex) | $2 == "*" -> return $ L1UnitExTimes $4 $1 ex
-                   (Right d) | $2 == "**" -> return $ L1UnitPow $4 $1 d
-                   otherwise -> happyError (TokNamedSymbol $2)
-                 }
-               | scopedId getPos { L1UnitScopedVar $2 $1 }
+unitExpression
+  : Dimensionless { L1UnitExDimensionless (alexPosToSrcPoint $1) }
+  | relOrAbsPath { L1UnitExRef ((\(L1RelOrAbsPath ss _ _) -> ss) $1) $1 }
+  | double NamedSymbol unitExpression %prec unitExpression {%
+     do
+       (when (snd $2 /= "*") . fail $ "Expected * " ++ " at " ++ (show $3))
+       return $ L1UnitScalarMup (twoPosToSpan (fst $1) (l1UnitExSS $3)) (snd $1) $3
+                                                           }
+  | unitExpression NamedSymbol unitExprEnding {%
+     case $3 of
+       (Left ex) | snd $2 == "*" -> return $ L1UnitExTimes (twoPosToSpan (l1UnitExSS $1) (l1UnitExSS ex)) $1 ex
+       (Right (ss, d)) | snd $2 == "**" -> return $ L1UnitPow (twoPosToSpan (l1UnitExSS $1) ss) $1 d
+       otherwise -> happyError (TokNamedSymbol $2)
+                                              }
+  | scopedId { L1UnitScopedVar (l1ScopedIdSS $1) $1 }
 
-unitExprEnding : double %prec highestSep { Right $1 }
+unitExprEnding : double %prec highestSep { Right (fst $1, snd $1) }
                | unitExpression %prec unitExprEnding { Left $1 }
-double : SignedInt { fromIntegral $1 }
-       | Int { fromIntegral $1 }
-       | Real { $1 }
-integer : SignedInt { fromIntegral $1 }
-        | Int { fromIntegral $1 }
+double : SignedInt { (alexPosToSrcPoint $ fst $1, fromIntegral (snd $1)) }
+       | Int { (alexPosToSrcPoint $ fst $1, fromIntegral (snd $1)) }
+       | Real { (alexPosToSrcPoint $ fst $1, snd $1) }
+integer : SignedInt { (alexPosToSrcPoint $ fst $1, fromIntegral (snd $1)) }
+        | Int { (alexPosToSrcPoint $ fst $1, fromIntegral (snd $1)) }
 
-expression :: { L1Expression }
-           : expression applyOrWhereOrAs %prec expressionCombine { $2 $1 }
-           | relOrAbsPathPossiblyIntEnd getPos %prec expressionCombine {
-               L1ExReference $2 $1
-             }
-           | scopedId getPos %prec expressionCombine { L1ExBoundVariable $2 $1 }
-           | OpenBracket expression CloseBracket { $2 }
-           | R getPos maybe(bracketedUnits) PathSep double %prec expressionCombine { L1ExLiteralReal $2 (fromMaybe (L1UnitExDimensionless $2) $3) $5 }
-           | OpenCurlyBracket getPos sepBy(labelledExpression,Comma) CloseCurlyBracket getPos  %prec expressionCombine { L1ExMkProduct (twoPosToSpan $2 $5) $3 }
-           | Lookup getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { L1ExProject $2 $3 }
-           | Append getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { L1ExAppend $2 $3 }
-           | ForwardSlash getPos many(scopedId) RightArrow expression %prec expressionCombine {
-               foldl' (\ex sv -> L1ExLambda $2 sv ex) $5 $3
-             }
-           | Case startBlock expression many(expressionCase) closeBlock {
-               L1ExCase $2 $3 $4
-             }
+expression
+  :: { L1Expression }
+  : expression applyOrWhereOrAs %prec expressionCombine { $2 $1 }
+  | relOrAbsPathPossiblyIntEnd %prec expressionCombine {
+      L1ExReference (l1RelOrAbsPIESS $1) $1
+    }
+  | scopedId %prec expressionCombine { L1ExBoundVariable (l1ScopedIdSS $1) $1 }
+  | OpenBracket expression CloseBracket { $2 }
+  | R maybe(bracketedUnits) PathSep double %prec expressionCombine {
+      L1ExLiteralReal (twoPosToSpan (alexPosToSrcPoint $1) (fst $4))
+                      (fromMaybe (L1UnitExDimensionless (alexPosToSrcPoint $1)) $2) (snd $4) }
+  | OpenCurlyBracket sepBy(labelledExpression,Comma) CloseCurlyBracket %prec expressionCombine {
+      L1ExMkProduct (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $3)) $2
+     }
+  | Lookup relOrAbsPathPossiblyIntEnd %prec expressionCombine { 
+      L1ExProject (twoPosToSpan (alexPosToSrcPoint $1)
+                  (l1RelOrAbsPIESS $2)) $2
+     }
+  | Append relOrAbsPathPossiblyIntEnd %prec expressionCombine {
+      L1ExAppend (twoPosToSpan (alexPosToSrcPoint $1)
+                               (l1RelOrAbsPIESS $2)) $2
+     }
+  | ForwardSlash many(scopedId) RightArrow expression %prec expressionCombine {
+      let ss = twoPosToSpan (alexPosToSrcPoint $1) (l1ExSS $4)
+        in foldl' (\ex sv -> L1ExLambda ss sv ex) $4 $2
+    }
+  | startBlock(Case) expression Of many(expressionCase) closeBlock {
+      L1ExCase (twoPosToSpan $1 $5) $2 $4
+    }
 
-expressionCase : relOrAbsPathPossiblyIntEnd RightArrow startBlock expression closeBlock {
-    ($1, $4)
+expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {
+    ($1, $3)
   }
 
-applyOrWhereOrAs : Where getPos namespaceContents %prec expressionCombine { \expr -> L1ExLet $2 expr $3 }
-  | expression getPos %prec expressionCombine { \expr -> L1ExApply $2 expr $1 }
-  | As getPos relOrAbsPathPossiblyIntEnd %prec expressionCombine { \expr -> L1ExMkUnion $2 $3 expr }
+applyOrWhereOrAs : Where namespaceContents %prec expressionCombine {
+    \expr -> L1ExLet (twoPosToSpan (l1ExSS expr) (alexPosToSrcPoint $1)) expr $2 }
+  | expression %prec expressionCombine { \expr -> L1ExApply (twoPosToSpan (l1ExSS expr) (l1ExSS $1)) expr $1 }
+  | As relOrAbsPathPossiblyIntEnd %prec expressionCombine { \expr -> L1ExMkUnion (twoPosToSpan (l1ExSS expr) (l1RelOrAbsPIESS $2)) $2 expr }
 
 unitDefinition :: { L1UnitDefinition }
-  : Newbase getPos { L1UnitDefNewBase $2 }
-  | unitExpression getPos { L1UnitDefUnitExpr $2 $1 }
+  : Newbase { L1UnitDefNewBase (alexPosToSrcPoint $1) }
+  | unitExpression { L1UnitDefUnitExpr (l1UnitExSS $1) $1 }
 
-labelledExpression : relOrAbsPathPossiblyIntEnd Colon expression { ($1, $3) }
+labelledExpression
+  : relOrAbsPathPossiblyIntEnd Colon expression { ($1, $3) }
 
-getPos : {- empty -} %prec getPos {% (\((AlexPn _ row col):_) -> SrcSpan { srcFile = "input",
-                                                                           srcStartRow = row,
-                                                                           srcStartColumn = col,
-                                                                           srcEndRow = row,
-                                                                           srcEndColumn = col
-                                                                         }) `liftM` alexGetLastPos }
-
-startBlock : {- empty -} {% do
-                               (_:(AlexPn _ row col):_) <- alexGetLastPos
-                               alexPushBlockIndent (col + 1)
-                               return $ SrcSpan { srcFile = "input",
-                                                  srcStartRow = row,
-                                                  srcStartColumn = col,
-                                                  srcEndRow = row,
-                                                  srcEndColumn = col
-                                                }
-                         }
-closeBlock : getPos CloseBlock { $1}
+startBlock(t) : t {% do
+                      let (AlexPn _ _ col) = $1
+                      alexPushBlockIndent (col + 1)
+                      return $ alexPosToSrcPoint $1
+                  }
+startBlockRelOrAbsPathPossiblyIntEnd
+  : relOrAbsPathPossiblyIntEnd {%
+      do
+        let col = srcStartColumn (l1RelOrAbsPIESS $1)
+        alexPushBlockIndent (col + 1)
+        return $1
+                               }
+closeBlock : CloseBlock { alexPosToSrcPoint $1 }
 
 maybe(x) : x           { Just $1 }
          | {- empty -} { Nothing }
@@ -334,4 +371,11 @@ happyError failTok = do
 
 parseFieldML :: LBS.ByteString -> Either String L1NamespaceContents
 parseFieldML bs = runAlex bs happyParseFieldML
+
+alexPosToSrcPoint (AlexPn _ row col) = SrcSpan { srcFile = "input",
+                                                 srcStartRow = row,
+                                                 srcStartColumn = col,
+                                                 srcEndRow = row,
+                                                 srcEndColumn = col
+                                               }
 }

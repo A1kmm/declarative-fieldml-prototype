@@ -13,18 +13,18 @@ import Data.Word
 import Data.Int
 import Data.Maybe
 import Data.Data
-import qualified Debug.Trace
+-- import qualified Debug.Trace
 }
 
 tokens :-
-  [\ \t\r\n]+ / [^\#\ \t\r\n] { \(AlexPn _ _ col, _, s') l ->
+  [\ \t\r\n]+ / [^\#\ \t\r\n] { \(pn@(AlexPn _ _ col), _, s') l ->
     (let possiblyCloseBlock = do
           bi <- alexGetBlockIndent
           if finalCol < bi then
             do
               alexPopBlockIndent
               pcb <- possiblyCloseBlock
-              return $ TokCloseBlock:pcb
+              return $ (TokCloseBlock pn):pcb
             else return []
          s = LBS.take (fromIntegral l) s'
          sParts = LBSC.splitWith (\c->c=='\r'||c=='\n') s
@@ -55,6 +55,7 @@ tokens :-
   my { returnP TokMy }
   namespace { returnP TokNamespace }
   newbase { returnP TokNewbase }
+  of { returnP TokOf }
   "::" { returnP TokPathSep }
   "->" { returnP TokRightArrow }
   subset { returnP TokSubset }
@@ -62,35 +63,33 @@ tokens :-
   using { returnP TokUsing }
   where { returnP TokWhere }
   \\ { returnP TokForwardSlash}
-  \= / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokEqual }
+  \= / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokEqual }
   \, { returnP TokComma }
-  \( { returnP TokOpenBracket }
-  \) { returnP TokCloseBracket }
-  \[ { returnP TokOpenSqBracket }
-  \] { returnP TokCloseSqBracket }
-  \{ { returnP TokOpenCurlyBracket }
-  \} { returnP TokCloseCurlyBracket }
-  \| / [^ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokPipe }
-  (\-|\+)[0-9]+ / [^Ee\.] { \(_, _, s) l -> return [TokSignedInt . fst . fromJust . LBSC.readInt $ s] }
-  [0-9]+ / [^Ee\.] { \(_, _, s) l -> return [TokInt . fst . fromJust . LBSC.readInt $ s] }
+  \( { openBracket TokOpenBracket }
+  \) { closeBracket TokCloseBracket }
+  \[ { openBracket TokOpenSqBracket }
+  \] { closeBracket TokCloseSqBracket }
+  \{ { openBracket TokOpenCurlyBracket }
+  \} { closeBracket TokCloseCurlyBracket }
+  \| / ([^ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokPipe }
+  (\-|\+)[0-9]+ / ([^Ee\.]|[\r\n]) { \(p, _, s) l -> return [TokSignedInt (p, fst . fromJust . LBSC.readInt $ s)] }
+  [0-9]+ / ([^Ee\.]|[\r\n]) { \(p, _, s) l -> return [TokInt (p, fst . fromJust . LBSC.readInt $ s)] }
   (\-|\+)?[0-9]+(\.[0-9]+)?((E|e)(\+|\-)?[0-9]+)? {
-    \(_, _, s) l -> return [TokReal . read . LBSC.unpack . LBS.take (fromIntegral l) $ s] }
-  \/ / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokSlash }
-  \~ / [^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|] { returnP TokTilde }
+    \(p, _, s) l -> return [TokReal (p, read . LBSC.unpack . LBS.take (fromIntegral l) $ s)] }
+  \/ / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokSlash }
+  \~ / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokTilde }
   ":" { returnP TokColon }
-  R / [^A-Za-z0-9_'] { returnP TokR }
-  \_[A-Za-z0-9_']* { \(_, _, s) l -> return [TokScopedSymbol (LBS.take (fromIntegral l) s)] }
-  [A-Za-z][A-Za-z0-9_']* { \(_, _, s) l -> return [TokNamedSymbol (LBS.take (fromIntegral l) s)] }
-  [ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(_, _, s) l -> return [TokNamedSymbol (LBS.take (fromIntegral l) s)] }
-  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(_, _, s) l -> return [TokString (LBS.take (fromIntegral l) s)] }
+  R / ([^A-Za-z0-9_']|[\r\n]) { returnP TokR }
+  \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.take (fromIntegral l) s)] }
+  [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
+  [ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
+  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.take (fromIntegral l) s)] }
 
 {
 type Byte = Word8
 type AlexInput = (AlexPosn, -- current position,
                   Char, -- previous char
                   LBS.ByteString) -- current input string
-
-alexKeepHistory = 2
 
 alexInputPrevChar :: AlexInput -> Char
 alexInputPrevChar (p,c,s) = c
@@ -104,7 +103,7 @@ alexGetByte (p,_,cs) | LBS.null cs = Nothing
                                     in p' `seq` cs' `seq` Just (b, (p', c, cs'))
 
 data AlexPosn = AlexPn !Int !Int !Int
-        deriving (Eq)
+        deriving (Eq, Ord, Data, Typeable)
 instance Show AlexPosn where
   showsPrec _ (AlexPn _ r c) = showString "line " . shows r . showString ", column " . shows c
 
@@ -118,12 +117,12 @@ alexMove (AlexPn a l c) _ = AlexPn (a+1) l (c+1)
 
 data AlexState = AlexState {
         alex_pos :: !AlexPosn, -- position at current input location
-        alex_last_pos :: ![AlexPosn], -- position going back in history
         alex_inp :: LBS.ByteString, -- the current input
         alex_chr :: !Char, -- the character before the input
         alex_scd :: !Int, -- the current startcode
-        alex_block_indent :: [Int], -- block indent levels (with an infinite tail of zeros).
-        alex_token_queue :: [Token] -- any tokens that were generated and need to be consumed.
+        alex_block_indent :: [(Int, Int)], -- block indent levels and bracket level (with an infinite tail of zeros).
+        alex_token_queue :: [Token], -- any tokens that were generated and need to be consumed.
+        alex_last_token :: Maybe Token
     }
 
 -- Compile with -funbox-strict-fields for best results!
@@ -131,12 +130,12 @@ data AlexState = AlexState {
 runAlex :: LBS.ByteString -> Alex a -> Either String a
 runAlex input (Alex f)
    = case f (AlexState {alex_pos = alexStartPos,
-                        alex_last_pos = take alexKeepHistory (repeat alexStartPos),
                         alex_inp = input,
                         alex_chr = '\n',
                         alex_scd = 0,
-                        alex_block_indent = repeat 0,
-                        alex_token_queue = []
+                        alex_block_indent = repeat (0, 1),
+                        alex_token_queue = [],
+                        alex_last_token = Nothing
                        }) of
        Left msg -> Left msg
        Right ( _, a ) -> Right a
@@ -160,21 +159,6 @@ alexSetInput (pos,c,inp)
  = Alex $ \s -> case s{alex_pos=pos,alex_chr=c,alex_inp=inp} of
                   s@(AlexState{}) -> Right (s, ())
 
-alexGetLastPos :: Alex [AlexPosn]
-alexGetLastPos
- = Alex $ \s@AlexState{alex_last_pos=pos} ->
-        Right (s, pos)
-
-alexBackupPosition :: Alex ()
-alexBackupPosition
- = Alex $ \s@AlexState{alex_pos=pos,alex_last_pos=hist} ->
-     Right (s{alex_last_pos=take alexKeepHistory (pos:hist)},())
-
-alexIgnoreOneBackup :: Alex ()
-alexIgnoreOneBackup
- = Alex $ \s@AlexState{alex_last_pos=hist} ->
-     Right (s{alex_last_pos=tail hist},())
-
 alexError :: String -> Alex a
 alexError message = Alex $ \s -> Left message
 
@@ -185,13 +169,43 @@ alexSetStartCode :: Int -> Alex ()
 alexSetStartCode sc = Alex $ \s -> Right (s{alex_scd=sc}, ())
 
 alexGetBlockIndent :: Alex Int
-alexGetBlockIndent = Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s, head abi)
+alexGetBlockIndent = Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s, fst $ head abi)
+
+alexWithBracketLevel :: (Int -> Int) -> Alex Int
+alexWithBracketLevel f = Alex $ \(s@AlexState{alex_block_indent=abi}) ->
+  let
+    oldBracketLevel = snd (head abi)
+    newBracketLevel = f oldBracketLevel
+  in
+    Right (s{alex_block_indent=(fst (head abi), newBracketLevel):(tail abi)}, newBracketLevel)
+
+alexSetLastToken :: Token -> Alex Token
+alexSetLastToken t = Alex $ \s -> Right (s{alex_last_token=Just t}, t)
+alexGetLastToken :: Alex (Maybe Token)
+alexGetLastToken = Alex $ \(s@AlexState{alex_last_token=t}) -> Right (s, t)
+
+alexIsTokenOpenBracket (TokOpenBracket _) = True
+alexIsTokenOpenBracket (TokOpenSqBracket _) = True
+alexIsTokenOpenBracket (TokOpenCurlyBracket _) = True
+alexIsTokenOpenBracket _ = False
+
+alexFixLookaheadBracket :: Alex ()
+alexFixLookaheadBracket = do
+  mt <- alexGetLastToken
+  -- Debug.Trace.trace ("alexGetLastToken returns " ++ show mt) (return ())
+  case mt of
+    Just t | alexIsTokenOpenBracket t ->
+      Alex $ \(s@AlexState{alex_block_indent=(ind1, bc1):(ind2, bc2):abi}) ->
+        Right (s{alex_block_indent=(ind1, bc1 + 1):(ind2, bc2 - 1):abi}, ())
+    _ -> return ()
 
 alexPopBlockIndent :: Alex ()
 alexPopBlockIndent = Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{alex_block_indent=tail abi}, ())
 
 alexPushBlockIndent :: Int -> Alex ()
-alexPushBlockIndent h = Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{alex_block_indent=h:abi}, ())
+alexPushBlockIndent h = do
+  -- Debug.Trace.trace ("alexPushBlockIndent " ++ (show h)) $! Alex $ \(s@AlexState{alex_block_indent=abi}) -> Right (s{alex_block_indent=(h, 0):abi}, ())
+  alexFixLookaheadBracket
 
 alexPutTokenQueue :: [Token] -> Alex ()
 alexPutTokenQueue tqend = Alex $
@@ -203,36 +217,39 @@ alexPopTokenQueue = Alex $
     [] -> Right (s,Nothing)
     (h:t) -> Right (s{alex_token_queue=t}, Just h)
 
-alexWithContinuation cont = alexMonadScan >>= cont
+alexWithContinuation cont = alexMonadScan' >>= cont
 
+alexMonadScan' = do
+  ret <- alexMonadScan
+  -- Debug.Trace.trace ("alexMonadScan: Returning " ++ (show ret)) (return ())
+  return ret
+  
 alexMonadScan = do
-  alexBackupPosition
   inp <- alexGetInput
   sc <- alexGetStartCode
   mt <- alexPopTokenQueue
   case mt of
-    Just t -> return t
+    Just t -> alexSetLastToken t
     Nothing -> do
       case (alexScan inp sc) :: (AlexReturn (AlexInput -> Int -> Alex [Token])) of
         AlexEOF -> do
           bi <- alexGetBlockIndent
           if bi == 0
-             then return TokEOF
+             then alexSetLastToken $ TokEOF ((\(p, _, _) -> p) inp)
              else do
                alexPopBlockIndent
-               return TokCloseBlock
+               alexSetLastToken $ TokCloseBlock ((\(p, _, _) -> p) inp)
         AlexError inp' -> alexError $ "Lexical error at " ++ ((show . (\(pn,_,_) -> pn)) $ inp')
         AlexSkip inp' len -> do
           alexSetInput inp'
-          alexIgnoreOneBackup
           alexMonadScan
         AlexToken inp' len action -> do
           alexSetInput inp'
           r <- action inp len
           case r of
-            (h:[]) -> return h
-            [] -> alexIgnoreOneBackup >> alexMonadScan
-            (h:t) -> alexPutTokenQueue t >> return h
+            (h:[]) -> alexSetLastToken h
+            [] -> alexMonadScan
+            (h:t) -> alexPutTokenQueue t >> alexSetLastToken h
 
 -- -----------------------------------------------------------------------------
 -- Useful token actions
@@ -255,61 +272,77 @@ token :: (AlexInput -> Int -> token) -> AlexAction token
 token t input len = return (t input len)
 
 data Token = -- Straight keywords and multi-char symbols
-             TokAppend |
-             TokAs |
-             TokCase |
-             TokClass |
-             TokClone |
-             TokConnect | TokDimensionless |
-             TokDomain |
-             TokEnsemble |
-             TokFrom |
-             TokHeadSep | -- ^ The sequence =>
-             TokHiding |
-             TokImport |
-             TokInstance |
-             TokLet |
-             TokLookup |
-             TokMy |
-             TokNamespace |
-             TokNewbase |
-             TokPathSep | -- ^ The sequence ::
-             TokRightArrow | -- ^ The sequence ->
-             TokSubset |
-             TokUnit |
-             TokUsing |
-             TokWhere |
+             TokAppend AlexPosn |
+             TokAs AlexPosn |
+             TokCase AlexPosn |
+             TokClass AlexPosn |
+             TokClone AlexPosn |
+             TokConnect AlexPosn |
+             TokDimensionless AlexPosn |
+             TokDomain AlexPosn |
+             TokEnsemble AlexPosn |
+             TokFrom AlexPosn |
+             TokHeadSep AlexPosn | -- ^ The sequence =>
+             TokHiding AlexPosn |
+             TokImport AlexPosn |
+             TokInstance AlexPosn |
+             TokLet AlexPosn |
+             TokLookup AlexPosn |
+             TokMy AlexPosn |
+             TokNamespace AlexPosn |
+             TokNewbase AlexPosn |
+             TokPathSep AlexPosn | -- ^ The sequence ::
+             TokRightArrow AlexPosn | -- ^ The sequence ->
+             TokSubset AlexPosn |
+             TokUnit AlexPosn |
+             TokUsing AlexPosn |
+             TokWhere AlexPosn |
              -- Meaningful single character punctuation
-             TokCloseBracket |
-             TokCloseCurlyBracket |
-             TokCloseSqBracket |
-             TokColon |
-             TokComma |
-             TokEqual |
-             TokForwardSlash |
-             TokOpenBracket |
-             TokOpenCurlyBracket |
-             TokOpenSqBracket |
-             TokPipe |
-             TokR |
-             TokSlash |
-             TokTilde |
+             TokCloseBracket AlexPosn |
+             TokCloseCurlyBracket AlexPosn |
+             TokCloseSqBracket AlexPosn |
+             TokColon AlexPosn |
+             TokComma AlexPosn |
+             TokEqual AlexPosn |
+             TokForwardSlash AlexPosn |
+             TokOf AlexPosn |
+             TokOpenBracket AlexPosn |
+             TokOpenCurlyBracket AlexPosn |
+             TokOpenSqBracket AlexPosn |
+             TokPipe AlexPosn |
+             TokR AlexPosn |
+             TokSlash AlexPosn |
+             TokTilde AlexPosn |
              -- Parsed values
-             TokInt Int |
-             TokNamedSymbol LBS.ByteString |
-             TokReal Double |
-             TokScopedSymbol LBS.ByteString |
-             TokSignedInt Int |
+             TokInt (AlexPosn, Int) |
+             TokNamedSymbol (AlexPosn, LBS.ByteString) |
+             TokReal (AlexPosn, Double) |
+             TokScopedSymbol (AlexPosn, LBS.ByteString) |
+             TokSignedInt (AlexPosn, Int) |
              -- Special tokens
              -- | Hit when a token is encountered at a lower level of indent
              --   than required for the current block
-             TokCloseBlock |
-             TokEOF | -- ^ End of file.
-             TokString LBS.ByteString
+             TokCloseBlock AlexPosn |
+             TokEOF AlexPosn | -- ^ End of file.
+             TokString (AlexPosn, LBS.ByteString)
     deriving (Eq, Ord, Data, Show, Typeable)
 
 ignorePendingBytes :: AlexInput -> AlexInput
 ignorePendingBytes (p,c,bs) = (p,c,bs)
 
-returnP x = \_ _ -> return [x]
+openBracket x (pos, _, _) _ = do
+  alexWithBracketLevel (+1)
+  return [x pos]
+
+closeBracket x ai@(pos, _, _) l = do
+  v <- alexWithBracketLevel (+(-1))
+  if v < 0
+    then do
+      alexPopBlockIndent
+      ret <- closeBracket x ai l
+      return $ (TokCloseBlock pos):ret
+    else
+      return [x pos]
+
+returnP x (pos, _, _) _ = return [x pos]
 }

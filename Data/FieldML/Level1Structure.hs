@@ -31,6 +31,7 @@ data L1NamespaceStatement =
                 } |
   L1NSDomain { l1nsSS :: SrcSpan,
                l1nsDomainName :: L1Identifier,
+               l1nsDomainParameters :: [L1ScopedID],
                l1nsDomainDefinition :: L1DomainDefinition,
                l1nsNamespaceContents :: L1NamespaceContents
              } |
@@ -51,6 +52,7 @@ data L1NamespaceStatement =
                  l1nsLabels :: [L1Identifier], 
                  l1nsAs :: Maybe L1Identifier } |
   L1NSUnit { l1nsSS :: SrcSpan,
+             l1nsUnitNmae :: L1Identifier,
              l1nsUnitDefinition :: L1UnitDefinition } |
   L1NSInstance { l1nsSS :: SrcSpan,
                  l1nsInstanceOfClass :: L1RelOrAbsPath,
@@ -164,9 +166,12 @@ data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |
                         L1UnitDefUnitExpr { l1UnitDefSS :: SrcSpan, l1UnitDefUnitExpr :: L1UnitExpression}
                         deriving (Eq, Ord, Data, Typeable, Show)
 
-data L1RelOrAbsPath = L1RelOrAbsPath Bool L1RelPath deriving (Eq, Ord, Data, Typeable, Show)
-data L1RelOrAbsPathPossiblyIntEnd = L1RelOrAbsPathNoInt Bool L1RelPath 
-                                  | L1RelOrAbsPathInt Bool L1RelPath Int deriving (Eq, Ord, Data, Typeable, Show)
-data L1RelPath = L1RelPath [L1Identifier] deriving (Eq, Ord, Data, Typeable, Show)
-newtype L1Identifier = L1Identifier LBS.ByteString deriving (Eq, Ord, Data, Typeable, Show)
-newtype L1ScopedID = L1ScopedID LBS.ByteString deriving (Eq, Ord, Data, Typeable, Show)
+data L1RelOrAbsPath = L1RelOrAbsPath SrcSpan Bool L1RelPath deriving (Eq, Ord, Data, Typeable, Show)
+data L1RelOrAbsPathPossiblyIntEnd = L1RelOrAbsPathNoInt { l1RelOrAbsPIESS :: SrcSpan, l1RelOrAbsPIEIsAbs :: Bool, 
+                                                          l1RelOrAbsPIERelPath :: L1RelPath }
+                                  | L1RelOrAbsPathInt { l1RelOrAbsPIESS :: SrcSpan, l1RelOrAbsPIEIsAbs :: Bool,
+                                                        l1RelOrAbsPIERelPath :: L1RelPath, 
+                                                        l1RelOrAbsPIEInt :: Int } deriving (Eq, Ord, Data, Typeable, Show)
+data L1RelPath = L1RelPath { l1RelPathSS :: SrcSpan, l1RelPathIDs :: [L1Identifier] } deriving (Eq, Ord, Data, Typeable, Show)
+data L1Identifier = L1Identifier { l1IdSS :: SrcSpan, l1IdBS :: LBS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
+data L1ScopedID = L1ScopedID { l1ScopedIdSS :: SrcSpan, l1ScopedIdBS :: LBS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
