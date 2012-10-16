@@ -1,1 +1,8 @@
 *~
+*.hi
+*.o
+*.info
+*.p_o
+*.p_hi
+*.a
+dist
