@@ -159,7 +159,9 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                l1ExValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
                     L1ExLet { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
-                               l1ExClosure :: L1NamespaceContents }
+                               l1ExClosure :: L1NamespaceContents } |
+                    L1ExString { l1ExSS :: SrcSpan,
+                                 l1ExStringValue :: LBS.ByteString }
                   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |

@@ -61,7 +61,7 @@ import qualified Data.ByteString.Lazy as LBS
 
 %left lowerEmpty
 %left lowerSep
-%left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup
+%left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
 %left ForwardSlash
 %left Comma Pipe
 %left OpenBracket
@@ -312,6 +312,9 @@ expression
     }
   | startBlock(Case) expression Of many(expressionCase) closeBlock {
       L1ExCase (twoPosToSpan $1 $5) $2 $4
+    }
+  | String {
+      L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
     }
 
 expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {
