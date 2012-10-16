@@ -1,0 +1,143 @@
+import from "Library.fieldml" / (HDF5)
+
+# Define a domain with 100 elements 1..100 ...
+domain Elements = subset N using \_n -> <= _n N::100
+
+# Define two axes (probably would be in library)...
+domain mmUnitLine = subset R[millimetre] using \_v -> && (<= _v R[millimetre]::1) (>= _v R[millimetre]::0)
+domain XAxis = clone mmUnitLine
+domain YAxis = clone mmUnitLine
+unit millimetre = 1E-3 * metre
+
+# Utilities for line endpoints (probably in library)...
+ensemble { minval, maxval } as LineEndpoint
+class HasLineEndpoints (_space) where
+  lineEndpoint :: _space -> Maybe(LineEndpoint)
+instance HasLineEndpoints (mmUnitLine) where
+  let == lineEndpoint (\_endpoint -> if (== _endpoint R[millimetre]::0)
+                                        (LineEndpoint::minval as Just)
+                                        (if (== _endpoint R[millimetre]::1)
+                                            (LineEndpoint::maxval as Just)
+                                            nothing
+                                         ))
+
+# Name the 1mm x 1mm chart made up of those two axes...
+domain ChartCoord = { XAxis, YAxis }
+
+ensemble { elementID, chartPosition, localNode } as MeshComponents
+import MeshComponents as MC # Shorthand...
+
+namespace private_disconnectedDetails where
+  # Define our disconnected mesh point
+  domain PointOn2DMesh = { MC::elementID : Elements, MC::chartPosition : ChartCoord }
+
+# Maybe - used for optional values (probably in library)...
+domain Maybe _a = (Just : _a | Nothing : {})
+ensemble { Just, Nothing }
+my nothing :: Maybe(_a)
+let == nothing ({} as Nothing)
+
+# Define a connected mesh point using point connectivity
+namespace PointConnectivity where
+  ensemble { tl, tr, bl, br } as SquareCorners
+  my findCorner :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => {XAxis : _a, YAxis : _b} -> Maybe(SquareCorners)
+  let == findCorner a
+  let == findCorner (\_v ->
+    case mxCorner of
+      Nothing -> nothing
+      Just -> (\_xCorner ->
+                case myCorner of
+                  Nothing -> const nothing
+                  Just -> \_yCorner ->
+                    case _xCorner of
+                      LineEndpoint::minval ->
+                        case _yCorner of
+                          LineEndpoint::minval -> SquareCorners::bl # Assuming (0,0) is lower left corner.
+                          LineEndpoint::maxval -> SquareCorners::tl
+                      LineEndpoint::maxval ->
+                        case _yCorner of
+                          LineEndpoint::minval -> SquareCorners::br
+                          LineEndpoint::maxval -> SquareCorners::tr)
+    where
+       my mxCorner
+       my myCorner
+       let == mxCorner (lineEndpoint (lookup XAxis _v))
+       let == myCorner (lineEndpoint (lookup YAxis _v)))
+
+  domain GlobalNode = subset N using \_n -> <= _n <= 121
+  my localToGlobal :: { MC::localNode : SquareCorners, MC::elementID : Elements} -> GlobalNode
+  
+  # HDF5::hdf5Array2N is provided in the library.
+  let == localToGlobal (\_local ->
+    asclone (HDF5::hdf5Array2N { HDF5::key: "localToGlobalNodes",
+                                 N::1: ensembleToNatural (lookup MC::localNode _local),
+                                 N::2: fromclone (lookup MC::elementID _local) }))
+
+  domain PointOn2DMesh =
+    connect private_disconnectedDetails::PointOn2DMesh using
+      \_p1 _p2 ->
+        case (findCorner (lookup MC::chartPosition _p1)) of
+          Nothing -> const Boolean::False
+          Just -> \_corner1 ->
+            case (findCorner (lookup MC::chartPosition _p2)) of
+              Nothing -> const Boolean::False
+              Just -> \_corner2 -> == (localToGlobal {MC::localNode : _corner1, MC::elementID : lookup MC::elementID _p1})
+                                      (localToGlobal {MC::localNode : _corner2, MC::elementID : lookup MC::elementID _corner2})
+
+namespace EdgeConnectivity where
+  ensemble { Top, Bottom, Left, Right } as Edge
+  ensemble { WhichEdge, WhereOnEdge }
+  domain EdgePoint = { WhichEdge: Edge, WhereOnEdge: mmUnitLine }
+
+  my findEdgePoint :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => {XAxis : _a, YAxis : _b} -> Maybe(EdgePoint)
+  let == findEdgePoint (\_v ->
+     case mxCorner of # Corners are always treated as being on Left / Right edge
+       Just -> \_xCorner ->
+         case _xCorner of
+           LineEndpoint::minval ->
+             { WhichEdge: Edge::Left, WhereOnEdge: lookup YAxis _v } as Just
+           LineEndpoint::maxval ->
+             { WhichEdge: Edge::Right, WhereOnEdge: lookup YAxis _v } as Just
+       Nothing -> const
+         case myCorner of
+           Just -> \_yCorner ->
+             case _yCorner of
+               LineEndpoint::minval -> # Assuming y=0 means bottom.
+                 { WhichEdge: Edge::Bottom, WhereOnEdge: lookup XAxis _v } as Just
+               LineEndpoint::maxval ->
+                 { WhichEdge: Edge::Top, WhereOnEdge: lookup XAxis _v } as Just
+           Nothing -> const nothing
+     where
+       my mxCorner
+       my myCorner
+       let == mxCorner (lineEndpoint (lookup XAxis v))
+       let == myCorner (lineEndpoint (lookup YAxis v)))
+
+  domain GlobalEdge = subset N using \_n -> <= _n <= 220
+  my localToGlobal :: { WhichEdge : Edge, MC::elementID : Elements} -> GlobalEdge
+  
+  # HDF5::hdf5Array2 is provided in the library.
+  let == localToGlobal (\_local ->
+    asclone (HDF5::hdf5Array2N { HDF5::key: "localToGlobalEdges",
+                                 N::1: ensembleToNatural (lookup WhichEdge _local),
+                                 N::2: fromclone (lookup MC::elementID _local) }))
+
+  domain PointOn2DMesh =
+    connect private_disconnectedDetails::PointOn2DMesh using
+      \_p1 _p2 ->
+        case mEdge1 of
+          Nothing -> const nothing
+          Just -> \_edge1 ->
+            case mEdge1 of
+              Nothing -> const nothing
+              Just -> \_edge2 ->
+                && (== (localToGlobal (lookup WhichEdge _edge1))
+                       (localToGlobal (lookup WhichEdge _edge2)))
+                   # We assume that edges are oriented the same way.
+                   (== (lookup WhereOnEdge _edge1)
+                       (lookup WhereOnEdge _edge2))
+        where
+          my mEdge1
+          my mEdge2
+          let == mEdge1 (findEdgePoint _p1)
+          let == mEdge2 (findEdgePoint _p2)
