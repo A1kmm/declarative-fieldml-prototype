@@ -61,6 +61,8 @@ import qualified Data.ByteString.Lazy as LBS
 
 %left lowerEmpty
 %left lowerSep
+%left expressionSig
+%left PathSep
 %left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
 %left ForwardSlash
 %left Comma Pipe
@@ -146,12 +148,12 @@ relPath0 : {- empty -} {% do
                            (pos, _, _) <- alexGetInput                        
                            return $ L1RelPath (alexPosToSrcPoint pos) []
                        }
-  | PathSep sepBy1(identifier, PathSep) { L1RelPath (twoPosToSpan (alexPosToSrcPoint $1) (l1IdSS (last $2))) $2 }
+  | PathSep sepBy1(identifier, PathSep) %prec highestSep { L1RelPath (twoPosToSpan (alexPosToSrcPoint $1) (l1IdSS (last $2))) $2 }
 relPath : sepBy1(identifier,PathSep) { L1RelPath (twoPosToSpan (l1IdSS $ head $1) (l1IdSS $ last $1)) $1 }
 
 relOrAbsPathPossiblyIntEnd
   :: { L1RelOrAbsPathPossiblyIntEnd }
-  : Slash relPath0PossiblyIntEndRev {
+  : Slash relPath0PossiblyIntEndRev %prec lowerSep {
       case $2 of
         Left v -> L1RelOrAbsPathNoInt (if null v then alexPosToSrcPoint $1
                                                  else twoPosToSpan (alexPosToSrcPoint $1)
@@ -161,7 +163,7 @@ relOrAbsPathPossiblyIntEnd
           L1RelOrAbsPathInt (twoPosToSpan (alexPosToSrcPoint $1)
                                           ss) True (L1RelPath (SrcSpan "-" 0 0 0 0) $ reverse v) i
      }
-  | relPathPossiblyIntEndRev {
+  | relPathPossiblyIntEndRev %prec lowerSep {
     case $1 of
       Left v -> L1RelOrAbsPathNoInt (twoPosToSpan (l1IdSS $ last v) (l1IdSS $ head v))
                                     False (L1RelPath (SrcSpan "-" 0 0 0 0) (reverse v))
@@ -170,9 +172,9 @@ relOrAbsPathPossiblyIntEnd
     }
 relPath0PossiblyIntEndRev
   :: { Either [L1Identifier] ([L1Identifier], (SrcSpan, Int)) }
-  : PathSep relPathPossiblyIntEndRev { $2 }
-  | {- empty -} { Left [] }
-relPathPossiblyIntEndRev : relPathPossiblyIntEndRev PathSep identifierOrInteger {%
+  : PathSep relPathPossiblyIntEndRev %prec highestSep { $2 }
+  | {- empty -} %prec lowerSep { Left [] }
+relPathPossiblyIntEndRev : relPathPossiblyIntEndRev PathSep identifierOrInteger %prec highestSep {%
   case ($1, $3) of
     (Right _, _) -> happyError (TokPathSep $2)
     (Left vl, Left v)  -> return $ Left (v:vl)
@@ -223,13 +225,13 @@ domainExpression
   | scopedId { L1DomainVariableRef (l1ScopedIdSS $1) $1 }
 
 domainExprStartsWithPath
-  : OpenBracket sepBy1(domainExpression,Comma) CloseBracket {
+  : OpenBracket sepBy1(domainExpression,Comma) CloseBracket %prec highestSep {
       \path' -> case path' of
         L1RelOrAbsPathNoInt ss ra p -> return $ L1DomainFunctionEvaluate (twoPosToSpan ss (alexPosToSrcPoint $3))
                                                                          (L1RelOrAbsPath ss ra p) $2
         L1RelOrAbsPathInt ss _ _ _ -> fail $ "Unexpected number label at " ++ show ss
     }
-  | {- empty -} { \path -> return $ L1DomainReference (l1RelOrAbsPIESS path) path }
+  | {- empty -} %prec lowerSep { \path -> return $ L1DomainReference (l1RelOrAbsPIESS path) path }
 
 maybeBracketedUnits : bracketedUnits %prec OpenSqBracket { $1 }
                     | {- empty -} %prec preferOpenSqBracket { L1UnitExDimensionless (SrcSpan "built-in" 0 0 0 0) }
@@ -315,6 +317,9 @@ expression
     }
   | String {
       L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
+    }
+  | expression PathSep domainExpression %prec expressionSig {
+      L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainExpressionSS $3)) $1 $3
     }
 
 expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {

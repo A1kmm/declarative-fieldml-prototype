@@ -161,7 +161,10 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
                                l1ExClosure :: L1NamespaceContents } |
                     L1ExString { l1ExSS :: SrcSpan,
-                                 l1ExStringValue :: LBS.ByteString }
+                                 l1ExStringValue :: LBS.ByteString } |
+                    L1ExSignature { l1ExSS :: SrcSpan,
+                                    l1ExExpression :: L1Expression,
+                                    l1ExSignature :: L1DomainExpression }
                   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |
