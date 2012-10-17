@@ -1,0 +1,32 @@
+# A fixed 3-layer 2D hierarchy of co-ordinate systems (i.e. not adaptive).
+
+ensemble { XAxis, YAxis } as Axis
+domain UnitLine1m = subset R[metre] using \_r -> < _r R[metre]::1.0
+domain L3ChartX = clone UnitLine1m
+domain L3ChartY = clone UnitLine1m
+
+# A million elements - 100 L3 elements per L2 element, 100 L2 elements
+# per L1 element, and 100 L1 elements in the mesh.
+domain L1Element = subset N using \_n -> < _n 100
+domain L2Element = subset N using \_n -> < _n 100
+domain L3Element = subset N using \_n -> < _n 100
+
+ensemble {ElementID, LocationInElement}
+domain ElementPoint _elid _elloc = { ElementID: _elid, LocationInElement: _elloc }
+domain MeshPoint = ElementPoint[_elid=L1Element, _elloc=L1Point]
+domain L1Point = ElementPoint[_elid=L2Element, _elloc=L2Point]
+domain L2Point = ElementPoint[_elid=L3Element, _elloc=L3Chart]
+
+domain L3Chart = { XAxis : L3ChartX, YAxis : L3ChartY }
+
+my somePointInTheMiddle :: MeshPoint
+let == somePointInTheMiddle {
+    ElementID: (asclone (N::50)) :: L1Element,
+    LocationInElement: {
+      ElementID: (asclone (N::50)) :: L2Element,
+      LocationInElement: {
+        ElementID: (asclone (N::50)) :: L3Element,
+        LocationInElement: { XAxis: asclone R[metre]::0.5, YAXis: asclone R[metre]::0.5 }
+      }
+    }
+  }
