@@ -1,0 +1,40 @@
+import from "PresumedToExist.fieldml" / (Mesh3D, Mesh2D)
+
+# We firstly define our subset...
+domain AParticularBoundaryPoint =
+  subset Mesh3D::MeshPoint using Mesh3D::isMemberOfAParticularBoundary
+
+# We can alternatively represent the same information a different way...
+domain AParticularBoundaryPoint2D = clone Mesh2D::MeshPoint
+
+# This would be defined in the library...
+class TreatAsEmbedded(_subdomain) where
+  domain HostDomain(_subdomain)
+  convertToHost :: _subdomain -> HostDomain(_subdomain)
+  convertToSubdomain :: HostDomain(_subdomain) -> _subdomain
+
+instance TreatAsEmbedded(AParticularBoundaryPoint2D) where
+  domain HostDomain(AParticularBoundaryPoint2D) = Mesh3D::MeshPoint
+  let == convertToHost
+    (\_point2d -> Mesh3D::coords3dToMeshPoint
+                    (Mesh3D::translateAPartictularBoundaryPointTo3D (Mesh2D::meshPointTo2dCoords (fromclone _point2d))))
+  let == convertToSubdomain
+    (\_point3d -> case (partialInvert Mesh3D::meshPointTo3dCoords (Mesh3D::meshPointTo3dCoords _point3d)) of
+                    Nothing -> const nothing # Can't be inverted (not on boundary)
+                    Just -> \_coords2d -> (asclone (Mesh2D::coords2dToMeshPoint _coords2d)) as Just)
+
+namespace ClonedMesh3D where
+  domain MeshPoint = clone Mesh3D::MeshPoint
+
+# If x is a ClonedMesh3D::MeshPoint, (fromclone x) has domain Mesh3D::MeshPoint
+# and convertToHost can be used to move from a (y :: AParticularBoundaryPoint2D)
+# to Mesh3D::MeshPoint (and then you can use fromclone to move to
+# ClonedMesh3D::MeshPoint). For almost all applications, this should be
+# sufficient. If you have a good reason to clone AParticularBoundaryPoint2D
+# as well, it is quite simple...
+domain ClonedAParticularBoundaryPoint2D = clone AParticularBoundaryPoint2D
+instance TreatAsEmbedded(ClonedAParticularBoundaryPoint2D) where
+  domain HostDomain(ClonedAParticularBoundaryPoint2D) = ClonedMesh3D::MeshPoint
+  let == convertToHost (. asclone (. convertToHost fromclone))
+  # liftM is a library function that generalises (a -> b) -> (Maybe a -> Maybe b)
+  let == convertToSubdomain (. (liftM asclone) (. convertToSubdomain fromclone))
