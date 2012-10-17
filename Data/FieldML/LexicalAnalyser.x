@@ -71,18 +71,18 @@ tokens :-
   \] { closeBracket TokCloseSqBracket }
   \{ { openBracket TokOpenCurlyBracket }
   \} { closeBracket TokCloseCurlyBracket }
-  \| / ([^ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokPipe }
+  \| / ([^ \~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokPipe }
   (\-|\+)[0-9]+ / ([^Ee\.]|[\r\n]) { \(p, _, s) l -> return [TokSignedInt (p, fst . fromJust . LBSC.readInt $ s)] }
   [0-9]+ / ([^Ee\.]|[\r\n]) { \(p, _, s) l -> return [TokInt (p, fst . fromJust . LBSC.readInt $ s)] }
   (\-|\+)?[0-9]+(\.[0-9]+)?((E|e)(\+|\-)?[0-9]+)? {
     \(p, _, s) l -> return [TokReal (p, read . LBSC.unpack . LBS.take (fromIntegral l) $ s)] }
-  \/ / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokSlash }
-  \~ / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokTilde }
+  \/ / ([^\~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokSlash }
+  \~ / ([^\~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokTilde }
   ":" { returnP TokColon }
   R / ([^A-Za-z0-9_']|[\r\n]) { returnP TokR }
   \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.take (fromIntegral l) s)] }
   [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
-  [ \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
+  [ \. \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
   \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.take (fromIntegral l) s)] }
 
 {
