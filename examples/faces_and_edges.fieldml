@@ -11,7 +11,7 @@ domain AParticularBoundaryPoint2D = clone Mesh2D::MeshPoint
 class TreatAsEmbedded(_subdomain) where
   domain HostDomain(_subdomain)
   convertToHost :: _subdomain -> HostDomain(_subdomain)
-  convertToSubdomain :: HostDomain(_subdomain) -> _subdomain
+  convertToSubdomain :: HostDomain(_subdomain) -> Maybe(_subdomain)
 
 instance TreatAsEmbedded(AParticularBoundaryPoint2D) where
   domain HostDomain(AParticularBoundaryPoint2D) = Mesh3D::MeshPoint
