@@ -1,0 +1,259 @@
+# This mesh can have infinitely many different levels of refinement. The domain
+# itself does not decide how many levels of refinement there are; instead,
+# fields producing points on the domain decide, and different values can be
+# at different levels of refinement (e.g an application using adaptive mesh
+# refinement will place different points on the same mesh at different
+# refinement levels).
+
+domain XDomain = clone R
+domain YDomain = clone R
+domain Value = clone R
+
+# Corners (i.e. the four DOFs for a bilinear interpolation).
+ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as Corner
+# If we refine, divide equally into four squares.
+ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as ElementOnLevel
+
+#  The definition of a refined mesh point (recursive).
+domain RefinedMeshSomething _a = (RefineFurther: { ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] } |
+                                  StopRefining: a)
+
+domain RefinedMeshPoint = RefinedMeshSomething[_a={XDomain, YDomain}]
+
+domain RefinedMeshDOFSet = (RefineFurther: ElementOnLevel -> RefinedMeshDOFSet |
+                            StopRefining: Corner -> Value)
+
+domain ChartPoint = {XDomain, YDomain}
+
+ensemble { AtRefinement }
+
+# The options at each level...
+ensemble { RefineFurther, StopRefining }
+
+my refinedDofField :: RefinedMeshDOFSet
+# We need to think more about how to serialise this, because the depth of
+# refinement is variable. For now, define a simple DOF set in place.
+# The nodal values look something like this:
+# 1       2 1 0   6
+#
+#         3 4 5   7
+#
+#         8 7 9   9
+#
+#
+#
+# 3   4   9   3   4
+#
+#
+#
+# 5   6   0       5
+#
+#
+#
+# 7   8   2       1
+let ==
+    refinedDofField
+    ((\_ref1 ->
+       case _ref1 of
+         ElementOnLevel::TopLeft ->
+           (const (\_corner2 ->
+                      case _corner2 of
+                        Corner::TopLeft -> const (asclone R::1)
+                        Corner::TopRight -> const (asclone R::2)
+                        Corner::BottomLeft -> const (asclone R::3)
+                        Corner::BottomRight -> const (asclone R::9)
+                  ) as StopRefining)
+         ElementOnLevel::TopRight ->
+           const ((\_ref2 ->
+                      case _ref2 of
+                        ElementOnLevel::TopLeft ->
+                          const ((\_ref3 ->
+                                    case _ref3 of
+                                      Corner::TopLeft ->
+                                        const ((\_corner4 ->
+                                                  case _corner4 of
+                                                    Corner::TopLeft -> const (asclone R::2)
+                                                    Corner::TopRight -> const (asclone R::1)
+                                                    Corner::BottomLeft -> const (asclone R::3)
+                                                    Corner::BottomLeft -> const (asclone R::4)
+                                               ) as StopRefining)
+                                      Corner::TopRight ->
+                                        const ((\_corner4 ->
+                                                  case _corner4 of
+                                                    Corner::TopLeft -> const (asclone R::1)
+                                                    Corner::TopRight -> const (asclone R::0)
+                                                    Corner::BottomLeft -> const (asclone R::4)
+                                                    Corner::BottomLeft -> const (asclone R::5)
+                                               ) as StopRefining)
+                                      Corner::BottomLeft ->
+                                        const ((\_corner4 ->
+                                                  case _corner4 of
+                                                    Corner::TopLeft -> const (asclone R::3)
+                                                    Corner::TopRight -> const (asclone R::4)
+                                                    Corner::BottomLeft -> const (asclone R::8)
+                                                    Corner::BottomLeft -> const (asclone R::7)
+                                               ) as StopRefining)
+                                      Corner::BottomRight ->
+                                        const ((\_corner4 ->
+                                                  case _corner4 of
+                                                    Corner::TopLeft -> const (asclone R::4)
+                                                    Corner::TopRight -> const (asclone R::5)
+                                                    Corner::BottomLeft -> const (asclone R::7)
+                                                    Corner::BottomLeft -> const (asclone R::9)
+                                               ) as StopRefining)
+                                 ) as RefineFurther)
+                        ElementOnLevel::TopRight ->
+                          const ((\_corner3 ->
+                                     case _corner4 of
+                                       Corner::TopLeft -> const (asclone R::0)
+                                       Corner::TopRight -> const (asclone R::6)
+                                       Corner::BottomLeft -> const (asclone R::9)
+                                       Corner::BottomLeft -> const (asclone R::9)
+                                 ) as StopRefining)
+                        ElementOnLevel::BottomLeft ->
+                          const ((\_corner3 ->
+                                     case _corner4 of
+                                       Corner::TopLeft -> const (asclone R::8)
+                                       Corner::TopRight -> const (asclone R::9)
+                                       Corner::BottomLeft -> const (asclone R::9)
+                                       Corner::BottomLeft -> const (asclone R::3)
+                                 ) as StopRefining)
+                        ElementOnLevel::BottomRight ->
+                          const ((\_corner3 ->
+                                     case _corner4 of
+                                       Corner::TopLeft -> const (asclone R::9)
+                                       Corner::TopRight -> const (asclone R::9)
+                                       Corner::BottomLeft -> const (asclone R::3)
+                                       Corner::BottomLeft -> const (asclone R::4)
+                                 ) as StopRefining)
+
+                  ) as RefineFurther)
+         ElementOnLevel::BottomLeft ->
+           const ((\_ref2 ->
+                     case _ref2 of
+                       ElementOnLevel::TopLeft ->
+                         const ((\_corner3 ->
+                                  case _corner3 of
+                                    Corner::TopLeft -> const (asclone R::3)
+                                    Corner::TopRight -> const (asclone R::4)
+                                    Corner::BottomLeft -> const (asclone R::5)
+                                    Corner::BottomRight -> const (asclone R::6)
+                                ) as StopRefining)
+                       ElementOnLevel::TopRight ->
+                         const ((\_corner3 ->
+                                  case _corner3 of
+                                    Corner::TopLeft -> const (asclone R::4)
+                                    Corner::TopRight -> const (asclone R::9)
+                                    Corner::BottomLeft -> const (asclone R::6)
+                                    Corner::BottomRight -> const (asclone R::0)
+                                ) as StopRefining)
+                       ElementOnLevel::BottomLeft ->
+                         const ((\_corner3 ->
+                                  case _corner3 of
+                                    Corner::TopLeft -> const (asclone R::5)
+                                    Corner::TopRight -> const (asclone R::6)
+                                    Corner::BottomLeft -> const (asclone R::7)
+                                    Corner::BottomRight -> const (asclone R::8)
+                                ) as StopRefining)
+                       ElementOnLevel::BottomRight ->
+                         const ((\_corner3 ->
+                                  case _corner3 of
+                                    Corner::TopLeft -> const (asclone R::6)
+                                    Corner::TopRight -> const (asclone R::0)
+                                    Corner::BottomLeft -> const (asclone R::8)
+                                    Corner::BottomRight -> const (asclone R::2)
+                                ) as StopRefining)
+                  ) as RefineFurther)
+         ElementOnLevel::BottomRight ->
+            const ((\_corner3 ->
+                       case _corner3 of
+                         Corner::TopLeft -> const (asclone R::9)
+                         Corner::TopRight -> const (asclone R::4)
+                         Corner::BottomLeft -> const (asclone R::2)
+                         Corner::BottomRight -> const (asclone R::1)
+                   ) as StopRefining)
+
+     )
+     as RefineFurther)
+
+# Now we define a field that will interpolate DOFs using bilinear interpolation.
+my interpolatedField :: {ChartPoint, RefinedMeshDOFSet } -> Value
+let ==
+    interpolatedField
+    (\_args -> 
+       asclone (case (lookup RefinedMeshDOFSet _args) of
+                  StopRefining ->
+                    \_dofs -> (+
+                               (+ (* (fromclone (_dofs Corner::TopLeft))
+                                   (* (- R::1 (fromclone x)) (- R::1 (fromclone y))))
+                                  (* (fromclone (_dofs Corner::TopRight))
+                                   (* (fromclone x) (- R::1 (fromclone y)))))
+                               (+ 
+                                (+ (* (fromclone (_dofs Corner::BottomLeft))
+                                   (* (- R::1 (fromclone x)) (fromclone y)))
+                                  (* (fromclone (_dofs Corner::BottomRight))
+                                   (* (fromclone x) (fromclone y))))
+                               )
+                              )
+                  RefineFurther ->
+                    \_dofsets ->
+                        interpolatedField {ChartPoint: pos', RefinedMeshDOFSet: _dofsets quadrant}
+                          where
+                            my quadrant :: ElementOnLevel
+                            let == quadrant (findQuadrant pos)
+                            my pos' :: ChartPoint
+                            let == pos' (convertToQuadrantCoords pos quadrant)
+               )
+         where
+           my pos :: ChartPoint
+           my x :: XDomain
+           my y :: YDomain
+           let == pos (lookup ChartPoint _args)
+           let == x (lookup XDomain pos)
+           let == y (lookup YDomain pos)
+    )
+
+# Works out where a ChartPoint falls at the next level of refinement.
+my findQuadrant :: ChartPoint -> ElementOnLevel
+let ==
+    findQuadrant
+    (\_pt -> if (<= (lookup XDomain _pt) R::0.5)
+                (
+                  if (<= (lookup YDomain _pt) R::0.5)
+                     ElementOnLevel::TopLeft
+                     ElementOnLevel::BottomLeft
+                )
+                (
+                  if (<= (lookup YDomain _pt) R::0.5)
+                     ElementOnLevel::TopRight
+                     ElementOnLevel::BottomRight
+                ))
+
+# This field takes a co-ordinate at one level (e.g. 0.3, 0.3) and a quadrant
+# (e.g. top-left), and makes a coordinate at the next level of refinement.
+# (in this case, 0.6, 0.6).
+my convertToQuadrantCoords :: {ChartPoint, ElementOnLevel} -> ChartPoint
+let == convertToQuadrantCoords 
+       (\_arg ->
+          (case (lookup ElementOnLevel _arg) of
+             ElementOnLevel::TopLeft ->
+               const { XDomain: asclone (* xR R::2),
+                       YDomain: asclone (* yR R::2) }
+             ElementOnLevel::TopRight ->
+               const { XDomain: asclone (* (- xR R::0.5) R::2),
+                       YDomain: asclone (* yR R::2) }
+             ElementOnLevel::BottomLeft ->
+               const { XDomain: asclone (* xR R::2),
+                       YDomain: asclone (* (- yR R::0.5) R::2) }
+             ElementOnLevel::TopRight ->
+               const { XDomain: asclone (* (- xR R::0.5) R::2),
+                       YDomain: asclone (* (- yR R::0.5) R::2) }
+          )
+            where
+              my pos :: ChartPoint
+              let == pos (lookup ChartPoint _arg)
+              my xR :: R
+              let == xR (fromclone (lookup XDomain pos))
+              my yR :: R
+              let == yR (fromclone (lookup YDomain pos))
+       )
