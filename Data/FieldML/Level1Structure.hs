@@ -11,7 +11,13 @@ data SrcSpan = SrcSpan {
     srcStartColumn :: Int,
     srcEndRow :: Int,
     srcEndColumn :: Int
-  } deriving (Eq, Ord, Data, Typeable, Show)
+  } deriving (Eq, Ord, Data, Typeable)
+instance Show SrcSpan where
+  show (SrcSpan sf sr sc er ec)
+    | sr==(-1) = sf
+    | sr==er && sc == ec = sf ++ (':':(show sr ++ ':':(show sc)))
+    | sr==er = sf ++ (':':(show sr ++ ':':(show sc))) ++ ('-':(show ec))
+    | otherwise = sf ++ (':':(show sr ++ ':':(show sc))) ++ (" to " ++ (show er ++ ':':(show ec)))
 
 -- Level 1 structure gives the raw structure of a model file, prior to any
 -- attempt to resolve symbols whatsoever.
@@ -49,10 +55,10 @@ data L1NamespaceStatement =
               l1nsClassValues :: [(L1Identifier, L1DomainType)]
             } |
   L1NSEnsemble { l1nsSS :: SrcSpan,
-                 l1nsLabels :: [L1Identifier], 
+                 l1nsLabels :: [L1Identifier],
                  l1nsAs :: Maybe L1Identifier } |
   L1NSUnit { l1nsSS :: SrcSpan,
-             l1nsUnitNmae :: L1Identifier,
+             l1nsUnitName :: L1Identifier,
              l1nsUnitDefinition :: L1UnitDefinition } |
   L1NSInstance { l1nsSS :: SrcSpan,
                  l1nsInstanceOfClass :: L1RelOrAbsPath,

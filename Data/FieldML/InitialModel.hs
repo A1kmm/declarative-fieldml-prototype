@@ -3,106 +3,84 @@ module Data.FieldML.InitialModel (initialModel, blankNamespace, nsSpecial, nsMai
 where
 
 import qualified Data.Map as M
-import Data.FieldML.Structure  
+import Data.FieldML.Level2Structure
 
 biSrcSpan = SrcSpan "built-in" 0 0 0 0
 
 -- We reserve IDs 0-99 of certain counters for builtin use.
 reservedIDs = 100
 
-nsSpecial = NamespaceID 0     -- ^ Pseudo-namespace ID for 'symbols' not reachable by the user.
-nsBuiltinMain = NamespaceID 1 -- ^ Namespace for builtin symbols.
-nsNatural = NamespaceID 2     -- ^ Namespace 'N', for natural numbers.
-nsInteger = NamespaceID 3     -- ^ Namespace 'Z', for integers.
-nsBoolean = NamespaceID 4     -- ^ Namespace 'Boolean', for booleans.
-nsMain = NamespaceID 5        -- ^ The top user-defined namespace.
+nsSpecial = L2NamespaceID 0     -- ^ Pseudo-namespace ID for 'symbols' not reachable by the user.
+nsBuiltinMain = L2NamespaceID 1 -- ^ Namespace for builtin symbols.
+nsNatural = L2NamespaceID 2     -- ^ Namespace 'N', for natural numbers.
+nsInteger = L2NamespaceID 3     -- ^ Namespace 'Z', for integers.
+nsBoolean = L2NamespaceID 4     -- ^ Namespace 'Boolean', for booleans.
+nsMain = L2NamespaceID 5        -- ^ The top user-defined namespace.
 
-dNatural = NewDomainID 0
-dInteger = NewDomainID 1
-dBoolean = NewDomainID 2
+dNatural = L2DomainID 0
+dInteger = L2DomainID 1
+dBoolean = L2DomainID 2
 
-vFalse = NamedValueID 0
-vTrue = NamedValueID 1
-vUndefined = NamedValueID 2
+vFalse = L2ValueID 0
+vTrue = L2ValueID 1
+vUndefined = L2ValueID 2
 
-blankNamespace ss p = Namespace { nsSrcSpan = ss, nsNamespaces = M.empty, nsDomains = M.empty,
-                                  nsValues = M.empty, nsClasses = M.empty, nsLabels = M.empty,
-                                  nsUnits = M.empty, nsParent = p, nsNextLabel = 0 }
+blankNamespaceContents ss p =
+  Namespace {
+    l2nsSrcSpan = ss, l2nsNamespaces = M.empty,
+    l2nsDomains = M.empty, l2nsNamedValues = M.empty,
+    l2nsClassValues = M.empty, l2nsUnits = M.empty,
+    l2nsClasses = M.empty, l2nsDomainFunctions = M.empty,
+    l2nsLabels = M.empty, l2nsParent = p, l2nsNextLabel = 0
+    }
 
 initialModel = Model {
-  nextNSID = NamespaceID reservedIDs,
-  nextNewDomain = NewDomainID reservedIDs,
-  nextNamedValue = NamedValueID reservedIDs,
-  nextDomainClass = DomainClassID reservedIDs,
-  nextUnit = UnitID reservedIDs,
-  nextScopedVariable = ScopedVariable reservedIDs,
-  -- The first non-reserved namespace is the toplevel one...
-  toplevelNamespace = nsMain,
-  allNamespaces = M.fromList [
+  l2ToplevelNamespace = nsMain,
+  l2AllNamespaces = M.fromList [
     (nsBuiltinMain,
-     Namespace {
-       nsSrcSpan = biSrcSpan,
-       nsNamespaces = M.fromList [("Builtin", OFKnown nsBuiltinMain),
-                                  ("N", OFKnown nsNatural),
-                                  ("Z", OFKnown nsInteger),
-                                  ("Boolean", OFKnown nsBoolean)],
-       nsDomains = M.fromList [("N", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dNatural),
-                               ("Z", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dInteger),
-                               ("Boolean", DomainType biSrcSpan (DomainHead []) . UseNewDomain . OFKnown $ dBoolean)],
-       nsValues = M.fromList [("true", OFKnown vTrue), ("false", OFKnown vFalse), ("undefined", OFKnown vUndefined)],
-       nsClasses = M.fromList [],
-       nsLabels = M.empty,
-       nsUnits = M.empty,
-       nsParent = nsSpecial, -- This is ignored by the system.
-       nsNextLabel = 0
+     blankNamespaceContents biSrcSpan nsSpecial {
+       l2nsNamespaces = M.fromList [("Builtin", nsBuiltinMain),
+                                    ("N", nsNatural),
+                                    ("Z", nsInteger),
+                                    ("Boolean", nsBoolean)],
+       l2nsDomains = M.fromList [("N", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dNatural)),
+                                 ("Z", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dInteger)),
+                                 ("Boolean", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dBoolean))]
+       l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)],
        }
     ),
-    (nsNatural, Namespace {
-          nsSrcSpan = biSrcSpan,
-          nsNamespaces = M.empty,
-          nsDomains = M.empty,
-          nsValues = M.empty,
-          nsClasses = M.empty,
-          nsLabels = M.empty, -- Natural labels 0..inf are handled elsewhere.
-          nsUnits = M.empty,
-          nsParent = nsBuiltinMain,
-          nsNextLabel = 0 -- Infinitely many labels.
-          }),
-    (nsInteger, Namespace {
-          nsSrcSpan = biSrcSpan,
-          nsNamespaces = M.empty,
-          nsDomains = M.empty,
-          nsValues = M.empty,
-          nsClasses = M.empty,
-          nsLabels = M.empty, -- Integer labels are handled elsewhere.
-          nsUnits = M.empty,
-          nsParent = nsBuiltinMain,
-          nsNextLabel = 0 -- Infinitely many labels.
-        }),
-    (nsBoolean, Namespace {
-          nsSrcSpan = biSrcSpan,
-          nsNamespaces = M.empty, -- Should we have Boolean.true & Boolean.false namespaces?
-          nsDomains = M.empty,
-          nsValues = M.empty,
-          nsClasses = M.empty,
+    (nsNatural, blankNamespaceContents biSrcSpan nsBuiltinMain {-
+          l2nsLabels = M.empty, -- Natural labels 0..inf are handled elsewhere.
+          l2nsNextLabel = 0 -- Infinitely many labels.
+          -}),
+    (nsInteger, blankNamespaceContents biSrcSpan nsBuiltinMain {-
+          l2nsLabels = M.empty, -- Integer labels are handled elsewhere.
+          l2nsNextLabel = 0 -- Infinitely many labels.
+        -}),
+    (nsBoolean, blankNamespaceContents biSrcSpan nsBuiltinMain {
+          l2nsNamespaces = M.empty, -- Should we have Boolean.true & Boolean.false namespaces?
           nsLabels = M.fromList [("false", ELabel nsBoolean 0), ("true", ELabel nsBoolean 1)],
-          nsUnits = M.empty,
-          nsParent = nsBuiltinMain,
           nsNextLabel = 2
         }),
-    (nsMain, blankNamespace biSrcSpan nsBuiltinMain)
+    (nsMain, blankNamespaceContents biSrcSpan nsBuiltinMain)
                              ],
-  allNewDomains = M.fromList [(dNatural, BuiltinDomain biSrcSpan),
-                              (dInteger, BuiltinDomain biSrcSpan),
-                              (dBoolean, BuiltinDomain biSrcSpan)],
-  allDomainClasses = M.empty,
-  allNamedValues = M.empty,
-  allUnits = M.empty,
-  instancePool = M.empty,
-  modelAssertions = [],
-  modelForeignNamespaces = M.empty,
-  modelForeignDomains = M.empty,
-  modelForeignDomainClasses = M.empty,
-  modelForeignValues = M.empty,
-  modelForeignUnits = M.empty
+  l2NextNamespace = L2NamespaceID reservedIDs,
+  l2AllDomains = M.fromList [(dNatural, L2BuiltinDomainContents biSrcSpan "naturals"),
+                             (dInteger, L2BuiltinDomainContents biSrcSpan "integer"),
+                             (dBoolean, L2BuiltinDomainContents biSrcSpan "boolean")],
+  l2NextDomain = L2DomainID reservedIDs,
+  l2AllValues = M.empty,
+  l2NextValue = L2ValueID reservedIDs,
+  l2AllAssertions = [],
+  l2AllBaseUnits = M.empty, -- Should SI units come built-in?
+  l2NextBaseUnits = L2BaseUnitsID reservedIDs,
+  l2AllClasses = M.empty,
+  l2NextClassID = L2ClassID reservedIDs,
+  l2AllInstances = [],
+  l2NextScopedDomainID = L2ScopedDomainID reservedIDs,
+  l2NextScopedValueID = L2ScopedValueID reservedIDs,
+  l2AllDomainFunctions = M.empty,
+  l2NextDomainFunctionID = L2DomainFunctionID reservedIDs,
+  l2AllClassValues = M.empty,
+  l2NextClassValueID = L2ClassValueID reservedIDs
   }
