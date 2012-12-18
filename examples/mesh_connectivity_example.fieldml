@@ -4,7 +4,7 @@ import from "Library.fieldml" / (HDF5)
 domain Elements = subset N using \_n -> <= _n N::100
 
 # Define two axes (probably would be in library)...
-domain mmUnitLine = subset R[millimetre] using \_v -> && (<= _v R[millimetre]::1) (>= _v R[millimetre]::0)
+domain mmUnitLine = subset R[millimetre] using \_v -> && ( <= _v R[millimetre]::1) (>= _v R[millimetre]::0)
 domain XAxis = clone mmUnitLine
 domain YAxis = clone mmUnitLine
 unit millimetre = 1E-3 * metre
@@ -22,25 +22,25 @@ instance HasLineEndpoints (mmUnitLine) where
                                          ))
 
 # Name the 1mm x 1mm chart made up of those two axes...
-domain ChartCoord = { XAxis, YAxis }
+domain ChartCoord = (< XAxis, YAxis >)
 
 ensemble { elementID, chartPosition, localNode } as MeshComponents
 import MeshComponents as MC # Shorthand...
 
 namespace private_disconnectedDetails where
   # Define our disconnected mesh point
-  domain PointOn2DMesh = { MC::elementID : Elements, MC::chartPosition : ChartCoord }
+  domain PointOn2DMesh = (< MC::elementID : Elements, MC::chartPosition : ChartCoord >)
 
 # Maybe - used for optional values (probably in library)...
-domain Maybe _a = (Just : _a | Nothing : {})
+domain Maybe _a = (Just : _a | Nothing : (<>))
 ensemble { Just, Nothing }
 my nothing :: Maybe(_a)
-let == nothing ({} as Nothing)
+let == nothing ((<>) as Nothing)
 
 # Define a connected mesh point using point connectivity
 namespace PointConnectivity where
   ensemble { tl, tr, bl, br } as SquareCorners
-  my findCorner :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => {XAxis : _a, YAxis : _b} -> Maybe(SquareCorners)
+  my findCorner :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => (<XAxis : _a, YAxis : _b>) -> Maybe(SquareCorners)
   let == findCorner a
   let == findCorner (\_v ->
     case mxCorner of
@@ -65,13 +65,13 @@ namespace PointConnectivity where
        let == myCorner (lineEndpoint (lookup YAxis _v)))
 
   domain GlobalNode = subset N using \_n -> <= _n <= 121
-  my localToGlobal :: { MC::localNode : SquareCorners, MC::elementID : Elements} -> GlobalNode
+  my localToGlobal :: (< MC::localNode : SquareCorners, MC::elementID : Elements >) -> GlobalNode
   
   # HDF5::hdf5Array2N is provided in the library.
   let == localToGlobal (\_local ->
-    asclone (HDF5::hdf5Array2N { HDF5::key: "localToGlobalNodes",
+    asclone (HDF5::hdf5Array2N (< HDF5::key: "localToGlobalNodes",
                                  N::1: ensembleToNatural (lookup MC::localNode _local),
-                                 N::2: fromclone (lookup MC::elementID _local) }))
+                                 N::2: fromclone (lookup MC::elementID _local) >)))
 
   domain PointOn2DMesh =
     connect private_disconnectedDetails::PointOn2DMesh using
@@ -81,31 +81,31 @@ namespace PointConnectivity where
           Just -> \_corner1 ->
             case (findCorner (lookup MC::chartPosition _p2)) of
               Nothing -> const Boolean::False
-              Just -> \_corner2 -> == (localToGlobal {MC::localNode : _corner1, MC::elementID : lookup MC::elementID _p1})
-                                      (localToGlobal {MC::localNode : _corner2, MC::elementID : lookup MC::elementID _corner2})
+              Just -> \_corner2 -> == (localToGlobal (<MC::localNode : _corner1, MC::elementID : lookup MC::elementID _p1>))
+                                      (localToGlobal (<MC::localNode : _corner2, MC::elementID : lookup MC::elementID _corner2>))
 
 namespace EdgeConnectivity where
   ensemble { Top, Bottom, Left, Right } as Edge
   ensemble { WhichEdge, WhereOnEdge }
-  domain EdgePoint = { WhichEdge: Edge, WhereOnEdge: mmUnitLine }
+  domain EdgePoint = (< WhichEdge: Edge, WhereOnEdge: mmUnitLine >)
 
-  my findEdgePoint :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => {XAxis : _a, YAxis : _b} -> Maybe(EdgePoint)
+  my findEdgePoint :: [class HasLineEndpoints(_a), class HasLineEndpoints(_b)] => (< XAxis : _a, YAxis : _b >) -> Maybe(EdgePoint)
   let == findEdgePoint (\_v ->
      case mxCorner of # Corners are always treated as being on Left / Right edge
        Just -> \_xCorner ->
          case _xCorner of
            LineEndpoint::minval ->
-             { WhichEdge: Edge::Left, WhereOnEdge: lookup YAxis _v } as Just
+             (< WhichEdge: Edge::Left, WhereOnEdge: lookup YAxis _v >) as Just
            LineEndpoint::maxval ->
-             { WhichEdge: Edge::Right, WhereOnEdge: lookup YAxis _v } as Just
+             (< WhichEdge: Edge::Right, WhereOnEdge: lookup YAxis _v >) as Just
        Nothing -> const
          case myCorner of
            Just -> \_yCorner ->
              case _yCorner of
                LineEndpoint::minval -> # Assuming y=0 means bottom.
-                 { WhichEdge: Edge::Bottom, WhereOnEdge: lookup XAxis _v } as Just
+                 (< WhichEdge: Edge::Bottom, WhereOnEdge: lookup XAxis _v >) as Just
                LineEndpoint::maxval ->
-                 { WhichEdge: Edge::Top, WhereOnEdge: lookup XAxis _v } as Just
+                 (< WhichEdge: Edge::Top, WhereOnEdge: lookup XAxis _v >) as Just
            Nothing -> const nothing
      where
        my mxCorner
@@ -114,13 +114,13 @@ namespace EdgeConnectivity where
        let == myCorner (lineEndpoint (lookup YAxis v)))
 
   domain GlobalEdge = subset N using \_n -> <= _n <= 220
-  my localToGlobal :: { WhichEdge : Edge, MC::elementID : Elements} -> GlobalEdge
+  my localToGlobal :: (< WhichEdge : Edge, MC::elementID : Elements >) -> GlobalEdge
   
   # HDF5::hdf5Array2 is provided in the library.
   let == localToGlobal (\_local ->
-    asclone (HDF5::hdf5Array2N { HDF5::key: "localToGlobalEdges",
-                                 N::1: ensembleToNatural (lookup WhichEdge _local),
-                                 N::2: fromclone (lookup MC::elementID _local) }))
+    asclone (HDF5::hdf5Array2N (< HDF5::key: "localToGlobalEdges",
+                                   N::1: ensembleToNatural (lookup WhichEdge _local),
+                                   N::2: fromclone (lookup MC::elementID _local) >)))
 
   domain PointOn2DMesh =
     connect private_disconnectedDetails::PointOn2DMesh using

@@ -15,15 +15,15 @@ ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as Corner
 ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as ElementOnLevel
 
 #  The definition of a refined mesh point (recursive).
-domain RefinedMeshSomething _a = (RefineFurther: { ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] } |
+domain RefinedMeshSomething _a = (RefineFurther: (< ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] >) |
                                   StopRefining: a)
 
-domain RefinedMeshPoint = RefinedMeshSomething[_a={XDomain, YDomain}]
+domain RefinedMeshPoint = RefinedMeshSomething[_a=(<XDomain, YDomain>)]
 
 domain RefinedMeshDOFSet = (RefineFurther: ElementOnLevel -> RefinedMeshDOFSet |
                             StopRefining: Corner -> Value)
 
-domain ChartPoint = {XDomain, YDomain}
+domain ChartPoint = (< XDomain, YDomain >)
 
 ensemble { AtRefinement }
 
@@ -177,7 +177,7 @@ let ==
      as RefineFurther)
 
 # Now we define a field that will interpolate DOFs using bilinear interpolation.
-my interpolatedField :: {ChartPoint, RefinedMeshDOFSet } -> Value
+my interpolatedField :: (< ChartPoint, RefinedMeshDOFSet >) -> Value
 let ==
     interpolatedField
     (\_args -> 
@@ -197,7 +197,7 @@ let ==
                               )
                   RefineFurther ->
                     \_dofsets ->
-                        interpolatedField {ChartPoint: pos', RefinedMeshDOFSet: _dofsets quadrant}
+                        interpolatedField (< ChartPoint: pos', RefinedMeshDOFSet: _dofsets quadrant >)
                           where
                             my quadrant :: ElementOnLevel
                             let == quadrant (findQuadrant pos)
@@ -217,14 +217,14 @@ let ==
 my findQuadrant :: ChartPoint -> ElementOnLevel
 let ==
     findQuadrant
-    (\_pt -> if (<= (lookup XDomain _pt) R::0.5)
+    (\_pt -> if ( <= (lookup XDomain _pt) R::0.5)
                 (
-                  if (<= (lookup YDomain _pt) R::0.5)
+                  if ( <= (lookup YDomain _pt) R::0.5)
                      ElementOnLevel::TopLeft
                      ElementOnLevel::BottomLeft
                 )
                 (
-                  if (<= (lookup YDomain _pt) R::0.5)
+                  if ( <= (lookup YDomain _pt) R::0.5)
                      ElementOnLevel::TopRight
                      ElementOnLevel::BottomRight
                 ))
@@ -232,22 +232,22 @@ let ==
 # This field takes a co-ordinate at one level (e.g. 0.3, 0.3) and a quadrant
 # (e.g. top-left), and makes a coordinate at the next level of refinement.
 # (in this case, 0.6, 0.6).
-my convertToQuadrantCoords :: {ChartPoint, ElementOnLevel} -> ChartPoint
+my convertToQuadrantCoords :: (< ChartPoint, ElementOnLevel >) -> ChartPoint
 let == convertToQuadrantCoords 
        (\_arg ->
           (case (lookup ElementOnLevel _arg) of
              ElementOnLevel::TopLeft ->
-               const { XDomain: asclone (* xR R::2),
-                       YDomain: asclone (* yR R::2) }
+               const (< XDomain: asclone (* xR R::2),
+                       YDomain: asclone (* yR R::2) >)
              ElementOnLevel::TopRight ->
-               const { XDomain: asclone (* (- xR R::0.5) R::2),
-                       YDomain: asclone (* yR R::2) }
+               const (< XDomain: asclone (* (- xR R::0.5) R::2),
+                       YDomain: asclone (* yR R::2) >)
              ElementOnLevel::BottomLeft ->
-               const { XDomain: asclone (* xR R::2),
-                       YDomain: asclone (* (- yR R::0.5) R::2) }
+               const (< XDomain: asclone (* xR R::2),
+                       YDomain: asclone (* (- yR R::0.5) R::2) >)
              ElementOnLevel::TopRight ->
-               const { XDomain: asclone (* (- xR R::0.5) R::2),
-                       YDomain: asclone (* (- yR R::0.5) R::2) }
+               const (< XDomain: asclone (* (- xR R::0.5) R::2),
+                        YDomain: asclone (* (- yR R::0.5) R::2) >)
           )
             where
               my pos :: ChartPoint

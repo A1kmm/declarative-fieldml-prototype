@@ -65,6 +65,8 @@ tokens :-
   \\ { returnP TokForwardSlash}
   \= / ([^\~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokEqual }
   \, { returnP TokComma }
+  \(\< { openBracket TokOpenProductBracket }
+  \>\) { openBracket TokCloseProductBracket }
   \( { openBracket TokOpenBracket }
   \) { closeBracket TokCloseBracket }
   \[ { openBracket TokOpenSqBracket }
@@ -310,6 +312,8 @@ data Token = -- Straight keywords and multi-char symbols
              TokOpenBracket AlexPosn |
              TokOpenCurlyBracket AlexPosn |
              TokOpenSqBracket AlexPosn |
+             TokOpenProductBracket AlexPosn |
+             TokCloseProductBracket AlexPosn |
              TokPipe AlexPosn |
              TokR AlexPosn |
              TokSlash AlexPosn |

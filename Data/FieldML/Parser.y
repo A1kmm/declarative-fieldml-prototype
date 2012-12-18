@@ -39,12 +39,14 @@ import qualified Data.ByteString.Lazy as LBS
        Where { TokWhere $$ }
        CloseBracket { TokCloseBracket $$ }
        CloseCurlyBracket { TokCloseCurlyBracket $$ }
+       CloseProductBracket { TokCloseProductBracket $$ }
        CloseSqBracket { TokCloseSqBracket $$ }
        Comma { TokComma $$ }
        Equal { TokEqual $$ }
        Of { TokOf $$ }
        OpenBracket { TokOpenBracket $$ }
        OpenCurlyBracket { TokOpenCurlyBracket $$ }
+       OpenProductBracket { TokOpenProductBracket $$ }
        OpenSqBracket { TokOpenSqBracket $$ }
        Pipe { TokPipe $$ }
        R { TokR $$ }
@@ -63,7 +65,7 @@ import qualified Data.ByteString.Lazy as LBS
 %left lowerSep
 %left expressionSig
 %left PathSep
-%left expressionCombine OpenCurlyBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
+%left expressionCombine OpenCurlyBracket OpenProductBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
 %left ForwardSlash
 %left Comma Pipe
 %left OpenBracket
@@ -206,7 +208,7 @@ domainClassRelation : Unit unitExpression Tilde unitExpression { L1DCRUnitConstr
 
 domainExpression
   :: { L1DomainExpression }
-  : OpenCurlyBracket labelledDomains(Comma) CloseCurlyBracket {
+  : OpenProductBracket labelledDomains(Comma) CloseProductBracket {
       L1DomainExpressionProduct (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $3)) $2 
     }
   | OpenBracket domainExpression bracketDomainExpression CloseBracket {%
@@ -297,7 +299,7 @@ expression
   | R maybe(bracketedUnits) PathSep double %prec expressionCombine {
       L1ExLiteralReal (twoPosToSpan (alexPosToSrcPoint $1) (fst $4))
                       (fromMaybe (L1UnitExDimensionless (alexPosToSrcPoint $1)) $2) (snd $4) }
-  | OpenCurlyBracket sepBy(labelledExpression,Comma) CloseCurlyBracket %prec expressionCombine {
+  | OpenProductBracket sepBy(labelledExpression,Comma) CloseProductBracket %prec expressionCombine {
       L1ExMkProduct (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $3)) $2
      }
   | Lookup relOrAbsPathPossiblyIntEnd %prec expressionCombine { 
