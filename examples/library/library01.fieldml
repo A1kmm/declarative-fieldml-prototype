@@ -1,0 +1,8 @@
+namespace algebra01 where
+
+  # Domain class for types that have a plus operator, such as numbers, linear algebra vectors, matrices, real valued functions.
+  class HasPlus(_a) where
+    vectorPlus :: _a -> _a -> _a
+
+  class HasScalarRealMultiply(_a) where
+    vectorScale :: R -> _a -> _a

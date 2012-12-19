@@ -1,0 +1,37 @@
+import from "library01.fieldml" algebra01
+
+
+# Experimental: exploring how a library for interpolation can be safely generalised.
+# In this case, linear Lagrange interpolation is generalised so that vectors in a vector space over the reals can be interpolated.
+# Todo: xi is here not constrained to the unit line.
+
+namespace interpolation01 where
+  namespace linearLagrange where
+    my linearLagrangeInterp :: [ class HasPlus(_a), class HasScalarRealMultiply(_a) ] => (< xi:R, a1:_a, a2:_a >) -> _a
+    let == linearLagrangeInterp (\ _arg -> result )
+
+      where
+        my xi :: R
+        let == xi (lookup xi _arg)
+
+        my a1 :: _a
+        let == a1 (lookup a1 _arg)
+
+        my a2 :: _a
+        let == a2 (lookup a2 _arg)
+
+        my a1s :: _a
+        let == a1s (vectorScale (phi1 _xi) a1) 
+
+        my a2s :: _a
+        let == a2s (vectorScale (phi2 _xi) a2) 
+
+        my result :: _a
+        let == result (vectorPlus a1s a2s)
+
+    my phi1 :: R -> R
+    let == phi1 (\ _xi -> (- (const R::1) _xi))
+
+    my phi2 :: R -> R
+    let == phi2 (\ _xi -> _xi)
+
