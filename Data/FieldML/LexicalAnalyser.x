@@ -6,6 +6,7 @@
 
 module Data.FieldML.LexicalAnalyser where
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import qualified Data.ByteString.Internal as BSI
 import Data.Char
@@ -82,10 +83,10 @@ tokens :-
   \~ / ([^\~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokTilde }
   ":" { returnP TokColon }
   R / ([^A-Za-z0-9_']|[\r\n]) { returnP TokR }
-  \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.take (fromIntegral l) s)] }
-  [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
-  [ \. \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.take (fromIntegral l) s)] }
-  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.take (fromIntegral l) s)] }
+  \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  [ \. \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
 
 {
 type Byte = Word8
@@ -320,16 +321,16 @@ data Token = -- Straight keywords and multi-char symbols
              TokTilde AlexPosn |
              -- Parsed values
              TokInt (AlexPosn, Int) |
-             TokNamedSymbol (AlexPosn, LBS.ByteString) |
+             TokNamedSymbol (AlexPosn, BS.ByteString) |
              TokReal (AlexPosn, Double) |
-             TokScopedSymbol (AlexPosn, LBS.ByteString) |
+             TokScopedSymbol (AlexPosn, BS.ByteString) |
              TokSignedInt (AlexPosn, Int) |
              -- Special tokens
              -- | Hit when a token is encountered at a lower level of indent
              --   than required for the current block
              TokCloseBlock AlexPosn |
              TokEOF AlexPosn | -- ^ End of file.
-             TokString (AlexPosn, LBS.ByteString)
+             TokString (AlexPosn, BS.ByteString)
     deriving (Eq, Ord, Data, Show, Typeable)
 
 ignorePendingBytes :: AlexInput -> AlexInput

@@ -6,6 +6,7 @@ import Data.FieldML.Level1Structure
 import Control.Monad
 import Data.Maybe
 import Data.List
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 }
 %monad { Alex }

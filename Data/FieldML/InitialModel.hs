@@ -1,11 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Data.FieldML.InitialModel (initialModel, blankNamespace, nsSpecial, nsMain, biSrcSpan, nsNatural, nsInteger)
+module Data.FieldML.InitialModel (initialModel, blankNamespaceContents, nsBuiltinMain, nsSpecial, nsMain, biSrcSpan, nsNatural, nsInteger)
 where
 
 import qualified Data.Map as M
 import Data.FieldML.Level2Structure
+import qualified Data.FieldML.Level1Structure as L1
 
-biSrcSpan = SrcSpan "built-in" 0 0 0 0
+biSrcSpan = L1.SrcSpan "built-in" 0 0 0 0
 
 -- We reserve IDs 0-99 of certain counters for builtin use.
 reservedIDs = 100
@@ -25,8 +26,9 @@ vFalse = L2ValueID 0
 vTrue = L2ValueID 1
 vUndefined = L2ValueID 2
 
+blankNamespaceContents :: SrcSpan -> L2NamespaceID -> L2NamespaceContents
 blankNamespaceContents ss p =
-  Namespace {
+  L2NamespaceContents {
     l2nsSrcSpan = ss, l2nsNamespaces = M.empty,
     l2nsDomains = M.empty, l2nsNamedValues = M.empty,
     l2nsClassValues = M.empty, l2nsUnits = M.empty,
@@ -34,19 +36,19 @@ blankNamespaceContents ss p =
     l2nsLabels = M.empty, l2nsParent = p, l2nsNextLabel = 0
     }
 
-initialModel = Model {
+initialModel = L2Model {
   l2ToplevelNamespace = nsMain,
   l2AllNamespaces = M.fromList [
     (nsBuiltinMain,
-     blankNamespaceContents biSrcSpan nsSpecial {
+     (blankNamespaceContents biSrcSpan nsSpecial) {
        l2nsNamespaces = M.fromList [("Builtin", nsBuiltinMain),
                                     ("N", nsNatural),
                                     ("Z", nsInteger),
                                     ("Boolean", nsBoolean)],
        l2nsDomains = M.fromList [("N", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dNatural)),
                                  ("Z", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dInteger)),
-                                 ("Boolean", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dBoolean))]
-       l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)],
+                                 ("Boolean", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dBoolean))],
+       l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)]
        }
     ),
     (nsNatural, blankNamespaceContents biSrcSpan nsBuiltinMain {-
@@ -57,10 +59,10 @@ initialModel = Model {
           l2nsLabels = M.empty, -- Integer labels are handled elsewhere.
           l2nsNextLabel = 0 -- Infinitely many labels.
         -}),
-    (nsBoolean, blankNamespaceContents biSrcSpan nsBuiltinMain {
+    (nsBoolean, (blankNamespaceContents biSrcSpan nsBuiltinMain) {
           l2nsNamespaces = M.empty, -- Should we have Boolean.true & Boolean.false namespaces?
-          nsLabels = M.fromList [("false", ELabel nsBoolean 0), ("true", ELabel nsBoolean 1)],
-          nsNextLabel = 2
+          l2nsLabels = M.fromList [("false", L2Label nsBoolean 0), ("true", L2Label nsBoolean 1)],
+          l2nsNextLabel = 2
         }),
     (nsMain, blankNamespaceContents biSrcSpan nsBuiltinMain)
                              ],

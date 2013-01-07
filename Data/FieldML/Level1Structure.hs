@@ -2,7 +2,7 @@
 module Data.FieldML.Level1Structure
 where
 
-import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString as BS
 import Data.Data
 
 data SrcSpan = SrcSpan {
@@ -25,7 +25,7 @@ instance Show SrcSpan where
 newtype L1NamespaceContents = L1NamespaceContents [L1NamespaceStatement] deriving (Eq, Ord, Data, Typeable, Show)
 data L1NamespaceStatement =
   L1NSImport { l1nsSS :: SrcSpan,
-               l1nsImportFrom :: (Maybe LBS.ByteString),
+               l1nsImportFrom :: (Maybe BS.ByteString),
                l1nsImportPath :: L1RelOrAbsPath,
                l1nsImportWhat :: Maybe [L1Identifier],
                l1nsImportHiding :: Maybe [L1Identifier],
@@ -167,7 +167,7 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
                                l1ExClosure :: L1NamespaceContents } |
                     L1ExString { l1ExSS :: SrcSpan,
-                                 l1ExStringValue :: LBS.ByteString } |
+                                 l1ExStringValue :: BS.ByteString } |
                     L1ExSignature { l1ExSS :: SrcSpan,
                                     l1ExExpression :: L1Expression,
                                     l1ExSignature :: L1DomainExpression }
@@ -184,5 +184,10 @@ data L1RelOrAbsPathPossiblyIntEnd = L1RelOrAbsPathNoInt { l1RelOrAbsPIESS :: Src
                                                         l1RelOrAbsPIERelPath :: L1RelPath, 
                                                         l1RelOrAbsPIEInt :: Int } deriving (Eq, Ord, Data, Typeable, Show)
 data L1RelPath = L1RelPath { l1RelPathSS :: SrcSpan, l1RelPathIDs :: [L1Identifier] } deriving (Eq, Ord, Data, Typeable, Show)
-data L1Identifier = L1Identifier { l1IdSS :: SrcSpan, l1IdBS :: LBS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
-data L1ScopedID = L1ScopedID { l1ScopedIdSS :: SrcSpan, l1ScopedIdBS :: LBS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
+data L1Identifier = L1Identifier { l1IdSS :: SrcSpan, l1IdBS :: BS.ByteString } deriving (Data, Typeable, Show)
+instance Eq L1Identifier where
+  (L1Identifier _ x) == (L1Identifier _ y) = x == y
+instance Ord L1Identifier where
+  (L1Identifier _ x) `compare` (L1Identifier _ y) = x `compare` y
+
+data L1ScopedID = L1ScopedID { l1ScopedIdSS :: SrcSpan, l1ScopedIdBS :: BS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
