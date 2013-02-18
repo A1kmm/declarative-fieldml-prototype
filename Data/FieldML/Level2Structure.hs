@@ -22,6 +22,10 @@ newtype L2ScopedUnitID = L2ScopedUnitID Int deriving (Eq, Ord, Data, Typeable, S
 newtype L2DomainFunctionID = L2DomainFunctionID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ClassValueID = L2ClassValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 
+type L2ScopedDomainMap = M.Map Identifier L2ScopedDomainID
+type L2ScopedValueMap = M.Map Identifier L2ScopedValueID
+type L2ScopedUnitMap = M.Map Identifier L2ScopedUnitID
+
 data L2Model =
   L2Model
   {
@@ -67,6 +71,7 @@ data L2NamespaceContents =
 data L2DomainContents =
   L2ClonelikeDomainContents {
       l2DomainSS :: SrcSpan,
+      l2DomainParameters :: [L2ScopedDomainID],
       l2DomainCloneOf :: L2DomainType,
       l2DomainCloneTypeSpecific :: L2DomainCloneType
     } |

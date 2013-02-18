@@ -248,6 +248,12 @@ findNamespaceInL2UsingL1Path ns0 l2mod (L1.L1RelPath _ ((L1.L1Identifier ss l1id
     Just ns1 ->
       findNamespaceInL2UsingL1Path ns1 l2mod (L1.L1RelPath ss l1ids)
 
+-- | Describes how to add to an existing L2Model by translating a list of parts
+-- referred to by L1NSPath (in queue - along with the SrcSpan that triggered the
+-- need to translate). deferred contains a set of paths that depend on
+-- these paths being translated first - if any of them are a dependency of this list
+-- of needed parts, it means the model has an invalid cyclic reference. done contains
+-- a set of the model parts that have already been translated.
 recursivelyTranslateModel :: S.Set L1NSPath -> S.Set L1NSPath -> [(L2.SrcSpan, L1NSPath)] -> ModelTranslation ()
 recursivelyTranslateModel deferred done queue =
   if null queue
@@ -276,35 +282,38 @@ recursivelyTranslateModel deferred done queue =
 findRelevantStatement :: [L2.SrcSpan] -> L1.L1RelPath -> ModelTranslation (Maybe L1.L1NamespaceStatement)
 findRelevantStatement context ref = undefined
 
+-- | Attempts to translate the model part referred to by snd p from the Level 1 structure
+-- into the Level 2 structure. done is the set of all paths that were already translated.
+-- fst p gives a SrcSpan that referenced this model part.
 tryTranslatePartNow :: (L2.SrcSpan, L1NSPath) -> S.Set L1NSPath -> ModelTranslation (Maybe [L1NSPath])
 tryTranslatePartNow p done = do
   (l1ns, _, _) <- ask
-  tryTranslatePartNow' 0 p done nsMain l1ns id False
+  tryTranslatePartNow' 0 p done nsMain l1ns id Nothing
 
 tryTranslatePartNow' :: Int -> (L1.SrcSpan, L1NSPath) -> S.Set L1NSPath -> L2.L2NamespaceID -> L1.L1NamespaceContents ->
                         (L1NSPath -> L1NSPath) ->
-                        Bool ->
+                        Maybe ([L1.L1ScopedID], L1.L1DomainDefinition) ->
                         ModelTranslation (Maybe [L1NSPath])
-tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) done thisNSID (L1.L1NamespaceContents l1ns) pToHere dom =
+tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) done thisNSID (L1.L1NamespaceContents l1ns) pToHere domainDetails =
   let nextLevel = [(ss, nc, False) | L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = L1.L1Identifier _ nn,
                                                         L1.l1nsNamespaceContents = nc } <- l1ns,
                                      nn == nsName] ++
-                  [(ss, nc, True) | L1.L1NSDomain { L1.l1nsSS = ss, L1.l1nsDomainName = L1.L1Identifier _ nn,
-                                                    L1.l1nsNamespaceContents = nc} <- l1ns,
+                  [(ss, nc, Just (dp, dd)) | L1.L1NSDomain { L1.l1nsSS = ss, L1.l1nsDomainName = L1.L1Identifier _ nn,
+                                                             L1.l1nsDomainParameters = dp, L1.l1nsDomainDefinition = dd,
+                                                             L1.l1nsNamespaceContents = nc } <- l1ns,
                                     nn == nsName ]
   in
     case nextLevel of
-      ((ss, downContents, dom):_) -> do
+      ((ss, downContents, isDomain):_) -> do
         newNSID <- findOrCreateNamespace ss thisNSID nsName downContents
-        tryTranslatePartNow' impDepth (ssFrom, nsPath) done newNSID downContents (pToHere . L1NSPathNamespace nsName) dom
+        tryTranslatePartNow' impDepth (ssFrom, nsPath) done newNSID downContents (pToHere . L1NSPathNamespace nsName) domainDetails
       [] -> do
         imp <- tryFindImportOf l1ns nsName
         case imp of
           Nothing -> fail $ "Cannot find namespace " ++ (BSC.unpack nsName) ++
                             " in namespace " ++ (show $ pToHere L1NSPathStop) ++
                             " referenced from " ++ (show ssFrom)
-          {- unneeded
-          Just (_, Just _, L1.L1RelOrAbsPath ss isAbs rpath) -> do
+          Just (_, Just url, L1.L1RelPath ss isAbs rpath) -> do
             -- Namespaces in external imports either exist already or they never will...
             when (not isAbs) $ fail $ "Import at " ++ (show ss) ++
               " combines a relative URL path with a model URL, which is invalid. " ++
@@ -314,7 +323,7 @@ tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) do
               "Reference to " ++ (show $ pToHere nsp) ++ " at " ++
               (show ssFrom) ++ " is invalid because " ++ (BS.unpack . fst . fromJust $ exists) ++
               " does not exist in " ++ (show . snd . fromJust $ exists)
-            return Nothing -}
+            return Nothing
           Just (_, Nothing, L1.L1RelOrAbsPath ss isAbs rpath) -> do
             apath <- rpathToNSPathFn ss nsp isAbs rpath
             if apath `S.member` done
@@ -324,10 +333,40 @@ tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) do
                 when (impDepth > 255) . fail $
                   "Number of redirections following imports exceeds 255; this usually means that there is a cycle of imports, at " ++ (show ss) ++
                   " processing reference from " ++ (show ssFrom)
-                tryTranslatePartNow' (impDepth + 1) (ssFrom, apath) done nsMain l1nsTop id False
+                -- Note: We don't add the part to the namespace here, only when we reach a L1NSPathStop. Note that if the import is a domain,
+                -- domainDetails will be filled out later just before L1NSPathStop is reached, so we just put Nothing in all cases.
+                tryTranslatePartNow' (impDepth + 1) (ssFrom, apath) done nsMain l1nsTop id Nothing
 
-tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID l1ns pToHere dom = do
-  tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID l1ns pToHere dom
+tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere (Just (domainParameters, domainDefinition)) = do
+  -- Translate a domain...
+  ttdd <- tryTranslateDomainDefinition impDepth ssFrom done thisNSID domainParameters domainDefinition  
+  case ttdd of
+    Left deps -> Just deps
+    Right domContents -> do
+      (mod, _) <- get
+      let thisNSContents = (L2.l2AllNamespaces mod)!thisNSID
+      let parentNS = l2nsParent thisNSContents
+      let parentContents = (L2.l2AllNamespaces mod)!parentNS
+      let nameInParent = fst . find ((==thisNSID) . snd) . M.toList . L2.l2nsNamespaces $ parentContents
+      let (domID, needAlloc) =
+            case M.lookup nameInParent (L2.l2nsDomains parentContents) of
+              Just d -> (d, False)
+              Nothing -> (l2NextDomain mod, True)
+      modify $ \(mod, l1m) ->
+                  (mod { L2.l2AllNamespaces =
+                            M.insert parentNS (parentContents {
+                                                  L2.l2nsDomains = M.insert nameInParent domID (L2.l2nsDomains parentContents)
+                                                  }) (L2.l2AllNamespaces mod),
+                         L2.l2AllDomains =
+                           M.insert domID domContents (L2.l2AllDomains mod),
+                         L2.l2NextNamespace
+                       }, l1m)
+  
+  -- Now do the part that is common to domains and namespaces.
+  tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing
+  
+tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing = do
+  -- Translate a namespace...
 
 tryFindImportOf l1ns nsName = undefined
 
