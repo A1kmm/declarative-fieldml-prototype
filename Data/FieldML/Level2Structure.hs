@@ -44,6 +44,7 @@ data L2Model =
     l2AllInstances :: [L2InstanceContents],
     l2NextScopedDomainID :: L2ScopedDomainID,
     l2NextScopedValueID :: L2ScopedValueID,
+    l2NextScopedUnitID :: L2ScopedUnitID,
     l2AllDomainFunctions :: M.Map L2DomainFunctionID L2DomainFunctionContents,
     l2NextDomainFunctionID :: L2DomainFunctionID,
     l2AllClassValues :: M.Map L2ClassValueID L2ClassValueContents,

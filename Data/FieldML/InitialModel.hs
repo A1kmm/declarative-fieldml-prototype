@@ -81,6 +81,7 @@ initialModel = L2Model {
   l2AllInstances = [],
   l2NextScopedDomainID = L2ScopedDomainID reservedIDs,
   l2NextScopedValueID = L2ScopedValueID reservedIDs,
+  l2NextScopedUnitID = L2ScopedUnitID reservedIDs,  
   l2AllDomainFunctions = M.empty,
   l2NextDomainFunctionID = L2DomainFunctionID reservedIDs,
   l2AllClassValues = M.empty,
