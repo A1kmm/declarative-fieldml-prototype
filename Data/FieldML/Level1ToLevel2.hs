@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, TypeFamilies #-}
+{-# LANGUAGE DeriveDataTypeable, TypeFamilies, PatternGuards #-}
 module Data.FieldML.Level1ToLevel2 where
 
 import qualified Data.FieldML.Level1Structure as L1
@@ -91,6 +91,7 @@ data L1NSPath = L1NSPathStop | L1NSPathNamespace BS.ByteString L1NSPath | L1NSPa
 --   It makes the following transformations:
 --     => import x as y => namespace y where import x
 --     => import from x ... | x == own URI => import ...
+--     => ensemble {...} as x => namespace x where ensemble {...}
 handleL1SimpleSyntacticSugar :: BS.ByteString -> L1.L1NamespaceContents -> L1.L1NamespaceContents
 handleL1SimpleSyntacticSugar self =
     transformBi (g . f)
@@ -99,6 +100,11 @@ handleL1SimpleSyntacticSugar self =
       L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = impas,
                          L1.l1nsNamespaceContents = L1.L1NamespaceContents [imp{L1.l1nsImportAs = Nothing}]
                        }
+    f (ens@(L1.L1NSEnsemble{ L1.l1nsSS = ss, L1.l1nsAs = Just x})) =
+      L1.L1Namespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = impas,
+                       L1.l1nsNamespaceContents = L1.L1NamespaceContents [
+                         ens { L1.l1nsAs = Nothing }
+                                                                         ]}
     f x = x
     g (imp@L1.L1NSImport { L1.l1nsImportFrom = Just impfrom })
       | impfrom == self = imp { L1.l1nsImportFrom = Nothing }
@@ -198,6 +204,15 @@ modifyNamespaceContents ns f =
                             }
                        }
 
+getNamespaceContents :: L2.L2NamespaceID -> Model L2.L2NamespaceContents
+getNamespaceContents = (() . mtsL2Model) <$> get
+
+findNamespace :: L2.L2NamespaceID -> BS.ByteString -> ModelTranslation (Maybe L2.L2NamespaceID)
+findNamespace parentNS nsName = do
+  m <- mtsL2Model <$> get
+  let Just pns = M.lookup parentNS (L2.l2AllNamespaces m)
+  M.lookup nsName (L2.l2nsNamespaces pns)
+
 findOrCreateNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> BS.ByteString -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
 findOrCreateNamespace ss parentNS nsName nsc = do
   m <- mtsL2Model <$> get
@@ -211,6 +226,9 @@ findOrCreateNamespace ss parentNS nsName nsc = do
 --   ns is the namespace we are requesting be processed now.
 --   This also imports everything (not just namespaces) required in this namespace from
 --   other files, allowing all further processing to focus on the contents of this file.
+-- For now this only does cross-module imports; this is probably going to end up
+-- being the cleanest design, so we can get rid of the cycle detection since there
+-- is already cycle detection for modules.
 processNamespaceImports :: S.Set L2.L2NamespaceID -> [L2.L2NamespaceID] -> L2.L2NamespaceID -> ModelTranslation ()
 processNamespaceImports done stack ns
   | ns `S.member` done = return ()
@@ -243,7 +261,7 @@ processNamespaceImports done stack ns
          impNS <- findNamespaceInL2UsingL1Path nsMain impMod rpath
          symList <- importListFromWhatAndHiding impNS impMod what hiding
          mapM_ (recursivelyImportExternalSymbol impMod from impNS ns) symList
-       _ -> undefined -- TODO
+       _ -> return ()
 
 -- | Pulls in a symbol from another model, along with everything needed for that
 --  symbol to be used.
@@ -480,13 +498,13 @@ findRelevantStatement context ref = undefined
 tryTranslatePartNow :: (L2.SrcSpan, L1NSPath) -> S.Set L1NSPath -> ModelTranslation (Maybe [L1NSPath])
 tryTranslatePartNow p done = do
   (l1ns, _, _) <- ask
-  tryTranslatePartNow' 0 p done nsMain l1ns id Nothing
+  tryTranslatePartNow' p done nsMain l1ns id Nothing
 
-tryTranslatePartNow' :: Int -> (L1.SrcSpan, L1NSPath) -> S.Set L1NSPath -> L2.L2NamespaceID -> L1.L1NamespaceContents ->
+tryTranslatePartNow' :: (L1.SrcSpan, L1NSPath) -> S.Set L1NSPath -> L2.L2NamespaceID -> L1.L1NamespaceContents ->
                         (L1NSPath -> L1NSPath) ->
                         Maybe ([L1.L1ScopedID], L1.L1DomainDefinition) ->
                         ModelTranslation (Maybe [L1NSPath])
-tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) done thisNSID (L1.L1NamespaceContents l1ns) pToHere domainDetails =
+tryTranslatePartNow' (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) done thisNSID (L1.L1NamespaceContents l1ns) pToHere domainDetails =
   let nextLevel = [(ss, nc, False) | L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = L1.L1Identifier _ nn,
                                                         L1.l1nsNamespaceContents = nc } <- l1ns,
                                      nn == nsName] ++
@@ -498,69 +516,152 @@ tryTranslatePartNow' impDepth (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) do
     case nextLevel of
       ((ss, downContents, isDomain):_) -> do
         newNSID <- findOrCreateNamespace ss thisNSID nsName downContents
-        tryTranslatePartNow' impDepth (ssFrom, nsPath) done newNSID downContents (pToHere . L1NSPathNamespace nsName) domainDetails
+        tryTranslatePartNow' (ssFrom, nsPath) done newNSID downContents (pToHere . L1NSPathNamespace nsName) domainDetails
       [] -> do
-        imp <- tryFindImportOf l1ns nsName
-        case imp of
-          Nothing -> fail $ "Cannot find namespace " ++ (BSC.unpack nsName) ++
+        -- Note: We don't check imports because paths are supposed to have been
+        -- already translated to not include any imports.
+        fail $ "Cannot find namespace " ++ (BSC.unpack nsName) ++
                             " in namespace " ++ (show $ pToHere L1NSPathStop) ++
                             " referenced from " ++ (show ssFrom)
-          Just (_, Just url, L1.L1RelPath ss isAbs rpath) -> do
-            -- Namespaces in external imports either exist already or they never will...
-            when (not isAbs) $ fail $ "Import at " ++ (show ss) ++
-              " combines a relative URL path with a model URL, which is invalid. " ++
-              "Did you mean to put a / in front of the path to import?"
-            exists <- doesImportedPartExist url (rpathToNSPathFn rpath nsPath)
-            when (isJust exists) . fail $
-              "Reference to " ++ (show $ pToHere nsp) ++ " at " ++
-              (show ssFrom) ++ " is invalid because " ++ (BS.unpack . fst . fromJust $ exists) ++
-              " does not exist in " ++ (show . snd . fromJust $ exists)
-            return Nothing
-          Just (_, Nothing, L1.L1RelOrAbsPath ss isAbs rpath) -> do
-            apath <- rpathToNSPathFn ss nsp isAbs rpath
-            if apath `S.member` done
-              then return Nothing
-              else do
-                (l1nsTop, _, _) <- ask
-                when (impDepth > 255) . fail $
-                  "Number of redirections following imports exceeds 255; this usually means that there is a cycle of imports, at " ++ (show ss) ++
-                  " processing reference from " ++ (show ssFrom)
-                -- Note: We don't add the part to the namespace here, only when we reach a L1NSPathStop. Note that if the import is a domain,
-                -- domainDetails will be filled out later just before L1NSPathStop is reached, so we just put Nothing in all cases.
-                tryTranslatePartNow' (impDepth + 1) (ssFrom, apath) done nsMain l1nsTop id Nothing
 
-tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere (Just (domainParameters, domainDefinition)) = do
-  -- Translate a domain...
-  ttdd <- tryTranslateDomainDefinition impDepth ssFrom done thisNSID domainParameters domainDefinition  
-  case ttdd of
-    Left deps -> Just deps
-    Right domContents -> do
-      (mod, _) <- get
-      let thisNSContents = (L2.l2AllNamespaces mod)!thisNSID
-      let parentNS = l2nsParent thisNSContents
-      let parentContents = (L2.l2AllNamespaces mod)!parentNS
-      let nameInParent = fst . find ((==thisNSID) . snd) . M.toList . L2.l2nsNamespaces $ parentContents
-      let (domID, needAlloc) =
-            case M.lookup nameInParent (L2.l2nsDomains parentContents) of
+tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID nsc pToHere (Just (domainParameters, domainDefinition)) = do
+  let Just thisNSContents = getNamespaceContents thisNSID
+  let parentNS = l2nsParent thisNSContents
+  let Just parentContents = getNamespaceContents parentNS
+  let nameInParent = fst . find ((==thisNSID) . snd) . M.toList . L2.l2nsNamespaces $ parentContents
+  case M.lookup nameInParent (L2.l2nsDomains parentContents) of
+    Just dd -> return ()
+    Nothing -> do
+      ttdd <- tryTranslateDomainDefinition ssFrom done thisNSID domainParameters domainDefinition
+      case ttdd of
+        Left deps -> Just deps
+        Right domContents -> do
+          (mod, _) <- get
+          let thisNSContents' = (L2.l2AllNamespaces mod)!thisNSID
+          let parentContents' = (L2.l2AllNamespaces mod)!parentNS
+          let (domID, needAlloc) =
+            case M.lookup nameInParent' (L2.l2nsDomains parentContents') of
               Just d -> (d, False)
               Nothing -> (l2NextDomain mod, True)
-      modify $ \(mod, l1m) ->
-                  (mod { L2.l2AllNamespaces =
-                            M.insert parentNS (parentContents {
-                                                  L2.l2nsDomains = M.insert nameInParent domID (L2.l2nsDomains parentContents)
+          modify $ \mts@(ModelTranslationState {mtsL2Model = mod}) ->
+                  mts { mtsL2Model = mod {
+                           L2.l2AllNamespaces =
+                              M.insert parentNS (parentContents' {
+                                                    L2.l2nsDomains = M.insert nameInParent domID (L2.l2nsDomains parentContents')
                                                   }) (L2.l2AllNamespaces mod),
-                         L2.l2AllDomains =
-                           M.insert domID domContents (L2.l2AllDomains mod),
-                         L2.l2NextNamespace
-                       }, l1m)
+                           L2.l2AllDomains =
+                             M.insert domID domContents (L2.l2AllDomains mod),
+                           L2.l2NextDomain =
+                             (if needAlloc then (\(L2DomainID n) -> L2DomainID (n + 1))  else id)
+                             (L2.l2nextDomain mod)
+                       }}
   
   -- Now do the part that is common to domains and namespaces.
-  tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing
-  
-tryTranslatePartNow' impDepth (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing = do
+  tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing
+
+tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID (L1.L1NamespaceContents nsc) pToHere Nothing = do
   -- Translate a namespace...
+  -- Firstly build a list of dependencies...
+  deps <- concatMapM
+          (\nss -> case nss of
+              L1NSImport {
+                l1nsImportFrom = Nothing,
+                l1nsImportPath = p,
+                l1nsImportWhat = what,
+                l1nsImportHiding = hiding,
+                l1nsImportAs = impId } -> do
+                  maybeToList <$> (ensureNoLocalImports =<<
+                   arpathToNSPathFn (pToHere L1NSPathStop) p)
+              L1NSNamespace { l1nsNamespaceName = ident } -> do
+                maybeToList <$> (ensureNoLocalImports
+                          (pToHere (L1NSPathNamespace ident L1NSPathStop)))
+              L1NSDomain { l1nsDomainName = ident } -> do
+                maybeToList <$> (ensureNoLocalImports
+                          (pToHere (L1NSPathDomain ident L1NSPathStop)))
+              L1NSAssertion { l1nsExpression = ex } ->
+                getExpressionDependencies pToHere ex
+              L1NSNamedValue { l1nsDomainType = Just dt } ->
+                getDomainTypeDependencies pToHere dt
+              L1NSClass { l1nsClassName = n, l1nsClassValues = cv } ->
+                concatMapM (getDomainTypeDependencies pToHere . snd) cv
+              L1NSUnit { l1nsUnitDefinition = ud } ->
+                getUnitDefinitionDependencies pToHere ud
+              L1NSInstance { l1nsInstanceOfClass = c,
+                             l1nsClassArguments = dts,
+                             l1nsInstanceDomainFunctions = dfs,
+                             l1nsInstanceValues = exs } ->
+                classp <-
+                  ensureNoLocalImports =<< arpathToNSPathFn (pToHere L1NSPathStop) c
+                dtsp <- concatMapM (getDomainTypeDependencies pToHere) dts
+                dfsp <- concatMap (\(_, dts, dex) ->
+                            (++) <$> concatMap (getDomainTypeDepedencies pToHere) dts
+                                 <*> getDomainExpressionDependencies pToHere dex
+                          ) dfs
+                expd <- concatMap (getExpressionDependencies pToHere) exs
+                return (classp:(dtsp ++ dfsp ++ expd))
+              _ -> []
+          ) nsc
+  -- Filter dependencies to remove those that are done...
+  let remainingDeps = filter (not . flip M.member done) pToHere
+  case remainingDeps of
+    (_:_) -> return remainingDeps
+    [] -> do
+      l2nsc <- getNamespaceContents thisNSID
+      flip (flip foldM l2nsc) nsc $ \l2nsc nss ->
+        case nss of
+          -- Note: We assume all remaining imports are local due to
+          -- processNamespaceImports, and have no 'as' clause because
+          -- of handleL1SimpleSyntacticSugar...
+          L1.L1NSImport {
+            L1.l1nsSS = ss,
+            L1.l1nsImportPath = rapath, 
+            L1.l1nsImportWhat = what,
+            L1.l1nsImportHiding = hidingWhat
+                        } -> do
+            case findNamespaceByRAPath thisNSID rapath of
+              Nothing ->
+                fail $ showString "Import at " . shows ss .
+                       showString " refers to a namespace " .
+                       shows rapath $ " that doesn't exist."
+              Just impFrom -> do
+                allSyms <- (S.fromList . allSymbolNames impFrom . mtsL2Model) <$> get
+                Just impContents <- getNamespaceContents impFrom
+                let whatSet = S.fromList <$> what
+                let hidingSet = S.fromList <$> hidingWhat
+                let includedSyms =
+                      maybe allSyms (S.intersect allSyms) whatSet
+                let notExcludedSyms =
+                      maybe includedSyms (S.difference includedSyms) hidingSet
+                let errorIncludedSyms =
+                  (maybe S.empty (flip S.difference allSyms) whatSet) `S.union`
+                  (maybe S.empty (flip S.difference allSyms) hidingSet)
+                when (not . S.null $ errorIncludeSyms) $ do
+                    fail $ showString "Import at " . shows ss .
+                           showString " mentions namespace member(s) that don't exist: " $
+                           intercalate ", " $
+                           map (\(L1Identifier idss bs) ->
+                                 BS.unpack bs ++ " at " ++ (show idss)) $
+                           S.toList errorIncludeSyms
+                forM_ (S.toList notExcludedSyms) $ \sym -> do
+                    case () of
+                      () | Just ns <- M.lookup sym (L2.l2nsNamespaces impContents) ->
+                        -- To do... add imported namespace to namespaces in importing namespace.
+                     undefined -- Need to finish the remaining symbol types that could be imported.
+
+
+mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM f l = catMaybes <$> seq (map f l)
+
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f l = concat <$> seq (map f l)
+
+tryTranslateDomainDefinition :: L1.SrcSpan -> S.Set L1NSPath -> L2.L2NamespaceID -> [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation (Maybe L2DomainContents)
+tryTranslateDomainDefinition ssFrom done 
 
 tryFindImportOf l1ns nsName = undefined
+
+arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation L1NSPath
+arpathToNSPathFn p (L1.L1RelOrAbsPath ss abs rp) = rpathToNSPathFn ss p abs rp
 
 rpathToNSPathFn :: L1.SrcSpan -> L1NSPath -> Bool -> L1.L1RelPath -> ModelTranslation L1NSPath
 rpathToNSPathFn ss _ True rpath = -- Absolute path...
