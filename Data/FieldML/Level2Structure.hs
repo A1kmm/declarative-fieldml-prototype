@@ -97,8 +97,8 @@ data L2BaseUnitContents = L2BaseUnitContents SrcSpan deriving (Eq, Ord, Show, Da
 data L2ClassContents = L2ClassContents {
   l2ClassSS :: SrcSpan,
   l2ClassParameters :: [(L2ScopedDomainID, L2Kind)],
-  l2ClassDomainFunctions :: [L2DomainFunctionID],
-  l2ClassValues :: [L2ClassValueID]
+  l2ClassDomainFunctions :: M.Map Identifier L2DomainFunctionID,
+  l2ClassValues :: M.Map Identifier L2ClassValueID
   }
                      deriving (Eq, Ord, Show, Data, Typeable)
 
@@ -183,6 +183,6 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
 data L2LabelledDomains = L2LabelledDomains [(L2Label, L2DomainExpression)]
                        deriving (Eq, Ord, Show, Data, Typeable)
 
-data L2DomainFunctionContents = L2DomainFunctionContents SrcSpan L2DomainType deriving (Eq, Ord, Show, Data, Typeable)
+data L2DomainFunctionContents = L2DomainFunctionContents SrcSpan Int deriving (Eq, Ord, Show, Data, Typeable)
 data L2ClassValueContents = L2ClassValueContents SrcSpan L2DomainType deriving (Eq, Ord, Show, Data, Typeable)
 data L2Label = L2Label { l2LabelEnsemble :: L2NamespaceID, l2LabelValue :: Integer } deriving (Eq, Ord, Show, Data, Typeable)
