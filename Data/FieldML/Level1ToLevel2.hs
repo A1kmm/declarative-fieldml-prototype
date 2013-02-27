@@ -297,7 +297,7 @@ recursivelyImportExternalSymbol foreignMod foreignURL foreignNS localNS ident = 
       tryLookupImportAndRegister L2.l2nsNamedValues (\x mod -> mod{L2.l2nsNamedValues=x}) recursivelyImportExternalValue,
       tryLookupImportAndRegister L2.l2nsClassValues (\x mod -> mod{L2.l2nsClassValues=x})
                                  recursivelyImportExternalClassValue,
-      tryLookupImportAndRegister L2.l2nsUnits (\x mod -> mod{L2.l2nsUnits=x}) recursivelyImportExternalUnits,
+      tryLookupImportAndRegister L2.l2nsUnits (\x mod -> mod{L2.l2nsUnits=x}) recursivelyImportExternalUnitExpression,
       tryLookupImportAndRegister L2.l2nsClasses (\x mod -> mod{L2.l2nsClasses=x}) recursivelyImportExternalClass,
       tryLookupImportAndRegister L2.l2nsDomainFunctions (\x mod -> mod{L2.l2nsDomainFunctions=x})
                                  recursivelyImportExternalDomainFunction,
@@ -321,21 +321,25 @@ cacheWrapExternalImport getMap setMap f foreignMod foreignURL target = do
       put (setMap (M.insert (foreignURL, target) r (getMap st)) st)
       return r
 
+recursivelyImportExternalNSContents :: L2.L2Model -> L2.Identifier -> L2.L2NamespaceContents -> ModelTranslation L2.L2NamespaceContents
+recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC =
+  L2.L2NamespaceContents (L2.l2nsSrcSpan foreignNSC) <$>
+    T.mapM (recursivelyImportExternalNS foreignMod foreignURL) (L2.l2nsNamespaces foreignNSC) <*>
+    T.mapM (recursivelyImportExternalDomain foreignMod foreignURL) (L2.l2nsDomains foreignNSC) <*>
+    T.mapM (recursivelyImportExternalValue foreignMod foreignURL) (L2.l2nsNamedValues foreignNSC) <*>
+    T.mapM (recursivelyImportExternalClassValue foreignMod foreignURL) (L2.l2nsClassValues foreignNSC) <*>
+    T.mapM (recursivelyImportExternalUnitExpression foreignMod foreignURL) (L2.l2nsUnits foreignNSC) <*>
+    T.mapM (recursivelyImportExternalClass foreignMod foreignURL) (L2.l2nsClasses foreignNSC) <*>
+    T.mapM (recursivelyImportExternalDomainFunction foreignMod foreignURL) (L2.l2nsDomainFunctions foreignNSC) <*>
+    T.mapM (recursivelyImportExternalLabel foreignMod foreignURL) (L2.l2nsLabels foreignNSC) <*>
+    recursivelyImportExternalNS foreignMod foreignURL (L2.l2nsParent foreignNSC) <*>
+    (pure (L2.l2nsNextLabel foreignNSC))
+
 recursivelyImportExternalNS :: L2.L2Model -> L2.Identifier -> L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceID
 recursivelyImportExternalNS = cacheWrapExternalImport mtsForeignToLocalNS (\x m -> m {mtsForeignToLocalNS=x}) $
                               \foreignMod foreignURL targetNS -> do
   let foreignNSC = (L2.l2AllNamespaces foreignMod) ! targetNS
-  newNSC <- L2.L2NamespaceContents (L2.l2nsSrcSpan foreignNSC) <$>
-              T.mapM (recursivelyImportExternalNS foreignMod foreignURL) (L2.l2nsNamespaces foreignNSC) <*>
-              T.mapM (recursivelyImportExternalDomain foreignMod foreignURL) (L2.l2nsDomains foreignNSC) <*>
-              T.mapM (recursivelyImportExternalValue foreignMod foreignURL) (L2.l2nsNamedValues foreignNSC) <*>
-              T.mapM (recursivelyImportExternalClassValue foreignMod foreignURL) (L2.l2nsClassValues foreignNSC) <*>
-              T.mapM (recursivelyImportExternalUnits foreignMod foreignURL) (L2.l2nsUnits foreignNSC) <*>
-              T.mapM (recursivelyImportExternalClass foreignMod foreignURL) (L2.l2nsClasses foreignNSC) <*>
-              T.mapM (recursivelyImportExternalDomainFunction foreignMod foreignURL) (L2.l2nsDomainFunctions foreignNSC) <*>
-              T.mapM (recursivelyImportExternalLabel foreignMod foreignURL) (L2.l2nsLabels foreignNSC) <*>
-              recursivelyImportExternalNS foreignMod foreignURL (L2.l2nsParent foreignNSC) <*>
-              (pure (L2.l2nsNextLabel foreignNSC))
+  newNSC <- recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC
   newNSID <- (L2.l2NextNamespace . mtsL2Model) <$> get
   modifyL2Model $ \mod -> mod {
     L2.l2NextNamespace = (\(L2.L2NamespaceID nid) -> L2.L2NamespaceID (nid + 1)) newNSID,
@@ -386,31 +390,211 @@ recursivelyImportExternalScopedUnit = cacheWrapExternalImport mtsForeignToLocalS
     }
   return newSUID
 
+recursivelyImportExternalScopedDomain :: L2.L2Model -> L2.Identifier -> L2.L2ScopedDomainID -> ModelTranslation L2.L2ScopedDomainID
+recursivelyImportExternalScopedDomain = cacheWrapExternalImport mtsForeignToLocalScopedDomain (\x m -> m {mtsForeignToLocalScopedDomain = x}) $
+                                      \foreignMod foreignURL targetSDID -> do
+  newSDID <- (L2.l2NextScopedDomainID . mtsL2Model) <$> get
+  modifyL2Model $ \mod -> mod {
+    L2.l2NextScopedDomainID = (\(L2.L2ScopedDomainID i) -> L2.L2ScopedDomainID (i + 1)) newSDID
+    }
+  return newSDID
+
+recursivelyImportExternalScopedValue :: L2.L2Model -> L2.Identifier -> L2.L2ScopedValueID -> ModelTranslation L2.L2ScopedValueID
+recursivelyImportExternalScopedValue = cacheWrapExternalImport mtsForeignToLocalScopedValue (\x m -> m {mtsForeignToLocalScopedValue = x}) $
+                                      \foreignMod foreignURL targetSVID -> do
+  newSVID <- (L2.l2NextScopedValueID . mtsL2Model) <$> get
+  modifyL2Model $ \mod -> mod {
+    L2.l2NextScopedValueID = (\(L2.L2ScopedValueID i) -> L2.L2ScopedValueID (i + 1)) newSVID
+    }
+  return newSVID
+
 recursivelyImportExternalBaseUnit :: L2.L2Model -> L2.Identifier -> L2.L2BaseUnitsID -> ModelTranslation L2.L2BaseUnitsID
 recursivelyImportExternalBaseUnit = cacheWrapExternalImport mtsForeignToLocalBaseUnits (\x m -> m{mtsForeignToLocalBaseUnits=x}) $
-                                    \foreignMod foreignURL bu -> 
-  undefined -- TODO
+                                    \foreignMod foreignURL bu -> do
+  newBUID <- (L2.l2NextBaseUnits . mtsL2Model) <$> get  
+  modifyL2Model $ \mod -> mod {
+    L2.l2NextBaseUnits = (\(L2.L2BaseUnitsID i) -> L2.L2BaseUnitsID (i + 1)) newBUID,
+    -- Note that L2BaseUnitContents only contains a SrcSpan so needs no translation...
+    L2.l2AllBaseUnits = M.insert newBUID (fromJust . M.lookup bu . L2.l2AllBaseUnits $ foreignMod)
+                                 (L2.l2AllBaseUnits mod)
+    }
+  return newBUID
 
 recursivelyImportExternalDomainExpression :: L2.L2Model -> L2.Identifier -> L2.L2DomainExpression -> ModelTranslation L2.L2DomainExpression
-recursivelyImportExternalDomainExpression foreignMod foreignURL targetEx = undefined -- TODO
+recursivelyImportExternalDomainExpression foreignMod foreignURL targetEx =
+  case targetEx of
+    L2.L2DomainExpressionProduct ss l ->
+      L2.L2DomainExpressionProduct ss <$>
+        recursivelyImportExternalLabelledDomains foreignMod foreignURL l
+    L2.L2DomainExpressionDisjointUnion ss l ->
+      L2.L2DomainExpressionDisjointUnion ss <$>
+        recursivelyImportExternalLabelledDomains foreignMod foreignURL l
+    L2.L2DomainExpressionFieldSignature ss dd dcd ->
+      L2.L2DomainExpressionFieldSignature ss
+        <$> recursivelyImportExternalDomainExpression foreignMod foreignURL dd
+        <*> recursivelyImportExternalDomainExpression foreignMod foreignURL dcd
+    L2.L2DomainExpressionReal ss u ->
+      L2.L2DomainExpressionReal ss
+        <$> recursivelyImportExternalUnitExpression foreignMod foreignURL u
+    L2.L2DomainExpressionApply ss dom sv val ->
+      L2.L2DomainExpressionApply ss
+        <$> recursivelyImportExternalDomainExpression foreignMod foreignURL dom
+        <*> recursivelyImportExternalScopedDomain foreignMod foreignURL sv
+        <*> recursivelyImportExternalDomainExpression foreignMod foreignURL val
+    L2.L2DomainFunctionEvaluate ss dfid args ->
+      L2.L2DomainFunctionEvaluate ss
+        <$> recursivelyImportExternalDomainFunction foreignMod foreignURL dfid
+        <*> mapM (recursivelyImportExternalDomainExpression foreignMod foreignURL) args
+    L2.L2DomainVariableRef ss sdid ->
+      L2.L2DomainVariableRef ss <$> recursivelyImportExternalScopedDomain foreignMod foreignURL sdid
 
-recursivelyImportExternalValue :: L2.L2Model -> L2.Identifier -> L2.L2ValueID -> ModelTranslation L2.L2ValueID
-recursivelyImportExternalValue foreignMod foreignURL targetValue = undefined -- TODO
+recursivelyImportExternalLabelledDomains :: L2.L2Model -> L2.Identifier -> L2.L2LabelledDomains -> ModelTranslation L2.L2LabelledDomains
+recursivelyImportExternalLabelledDomains foreignMod foreignURL (L2.L2LabelledDomains ldl) =
+  L2.L2LabelledDomains <$>
+    mapM (\(lab, ex) ->
+           (,) <$> recursivelyImportExternalLabel foreignMod foreignURL lab
+               <*> recursivelyImportExternalDomainExpression foreignMod foreignURL ex) ldl
 
-recursivelyImportExternalClassValue :: L2.L2Model -> L2.Identifier -> L2.L2ClassValueID -> ModelTranslation L2.L2ClassValueID
-recursivelyImportExternalClassValue foreignMod foreignURL targetValue = undefined -- TODO
-
-recursivelyImportExternalUnits :: L2.L2Model -> L2.Identifier -> L2.L2UnitExpression -> ModelTranslation L2.L2UnitExpression
-recursivelyImportExternalUnits foreignMod foreignURL targetUnits = undefined -- TODO
-
-recursivelyImportExternalClass :: L2.L2Model -> L2.Identifier -> L2.L2ClassID -> ModelTranslation L2.L2ClassID
-recursivelyImportExternalClass foreignMod foreignURL targetClass = undefined -- TODO
-
-recursivelyImportExternalDomainFunction :: L2.L2Model -> L2.Identifier -> L2.L2DomainFunctionID -> ModelTranslation L2.L2DomainFunctionID
-recursivelyImportExternalDomainFunction foreignMod foreignURL targetDF = undefined -- TODO
+recursivelyImportExternalExpression :: L2.L2Model -> L2.Identifier -> L2.L2Expression -> ModelTranslation L2.L2Expression
+recursivelyImportExternalExpression foreignMod foreignURL targetEx =
+  case targetEx of
+    L2.L2ExApply ss op arg ->
+      L2.L2ExApply ss
+        <$> recursivelyImportExternalExpression foreignMod foreignURL op
+        <*> recursivelyImportExternalExpression foreignMod foreignURL arg
+    L2.L2ExReferenceLabel ss l ->
+      L2.L2ExReferenceLabel ss
+        <$> recursivelyImportExternalLabel foreignMod foreignURL l
+    L2.L2ExReferenceValue ss valueID ->
+      L2.L2ExReferenceValue ss
+        <$> recursivelyImportExternalValue foreignMod foreignURL valueID
+    L2.L2ExReferenceClassValue ss cval ->
+      L2.L2ExReferenceClassValue ss
+        <$> recursivelyImportExternalClassValue foreignMod foreignURL cval
+    L2.L2ExBoundVariable ss svid ->
+      L2.L2ExBoundVariable ss
+        <$> recursivelyImportExternalScopedValue foreignMod foreignURL svid
+    L2.L2ExLiteralReal ss uex rv ->
+      L2.L2ExLiteralReal ss
+        <$> recursivelyImportExternalUnitExpression foreignMod foreignURL uex
+        <*> (return rv)
+    L2.L2ExMkProduct ss vals ->
+      L2.L2ExMkProduct ss
+        <$> mapM (\(lab, ex) ->
+                   (,)
+                     <$> recursivelyImportExternalLabel foreignMod foreignURL lab
+                     <*> recursivelyImportExternalExpression foreignMod foreignURL ex) vals
+    L2.L2ExMkUnion ss l ex ->
+      L2.L2ExMkUnion ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
+                        <*> recursivelyImportExternalExpression foreignMod foreignURL ex
+    L2.L2ExProject ss l ->
+      L2.L2ExProject ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
+    L2.L2ExAppend ss l ->
+      L2.L2ExAppend ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
+    L2.L2ExLambda ss bv val ->
+      L2.L2ExLambda ss <$> recursivelyImportExternalScopedValue foreignMod foreignURL bv
+                       <*> recursivelyImportExternalExpression foreignMod foreignURL val
+    L2.L2ExCase ss expr values ->
+      L2.L2ExCase ss <$> recursivelyImportExternalExpression foreignMod foreignURL expr
+                     <*> mapM (\(l, ex) ->
+                                (,)
+                                  <$> recursivelyImportExternalLabel foreignMod foreignURL l
+                                  <*> recursivelyImportExternalExpression foreignMod foreignURL ex
+                              ) values
+    L2.L2ExLet ss expr closure ->
+      L2.L2ExLet ss <$> recursivelyImportExternalExpression foreignMod foreignURL expr
+                    <*> recursivelyImportExternalNSContents foreignMod foreignURL closure
+    L2.L2ExString ss bs -> pure $ L2.L2ExString ss bs
+    L2.L2ExSignature ss ex sig ->
+      L2.L2ExSignature ss
+        <$> recursivelyImportExternalExpression foreignMod foreignURL ex
+        <*> recursivelyImportExternalDomainExpression foreignMod foreignURL sig
 
 recursivelyImportExternalLabel :: L2.L2Model -> L2.Identifier -> L2.L2Label -> ModelTranslation L2.L2Label
-recursivelyImportExternalLabel foreignMod foreignURL targetLabel = undefined -- TODO
+recursivelyImportExternalLabel foreignMod foreignURL (L2.L2Label ens val) =
+  L2.L2Label <$> recursivelyImportExternalNS foreignMod foreignURL ens
+             <*> pure val
+
+recursivelyImportExternalValue :: L2.L2Model -> L2.Identifier -> L2.L2ValueID -> ModelTranslation L2.L2ValueID
+recursivelyImportExternalValue =
+  cacheWrapExternalImport mtsForeignToLocalValues (\x m -> m{mtsForeignToLocalValues=x}) $
+    \foreignMod foreignURL foreignValueID -> do
+      let foreignValueContents = (fromJust . M.lookup foreignValueID . L2.l2AllValues $ foreignMod)
+      newValueID <- (L2.l2NextValue . mtsL2Model) <$> get
+      localValueContents <- L2.L2ValueContents (L2.l2ValueSS foreignValueContents) <$>
+                              maybe (return Nothing)
+                                (\fvc -> Just <$>
+                                         recursivelyImportExternalDomainType foreignMod foreignURL fvc)
+                                (L2.l2ValueType foreignValueContents)
+      modifyL2Model $ \mod -> mod {
+        L2.l2NextValue = (\(L2.L2ValueID i) -> L2.L2ValueID (i + 1)) newValueID,
+        L2.l2AllValues = M.insert newValueID localValueContents
+                              (L2.l2AllValues mod)
+        }
+      return newValueID
+
+recursivelyImportExternalDomainType :: L2.L2Model -> L2.Identifier -> L2.L2DomainType -> ModelTranslation L2.L2DomainType
+recursivelyImportExternalDomainType foreignMod foreignURL (L2.L2DomainType ss u deq dreln ex) =
+  L2.L2DomainType ss
+    <$> mapM (\(u1, u2) -> (,) <$> recursivelyImportExternalUnitExpression foreignMod foreignURL u1
+                               <*> recursivelyImportExternalUnitExpression foreignMod foreignURL u2) u
+    <*> mapM (\(d1, d2) -> (,)<$> recursivelyImportExternalDomainExpression foreignMod foreignURL d1
+                               <*> recursivelyImportExternalDomainExpression foreignMod foreignURL d2) deq
+    <*> mapM (\(cid, dexs) -> (,) <$> recursivelyImportExternalClass foreignMod foreignURL cid
+                                  <*> mapM (recursivelyImportExternalDomainExpression foreignMod foreignURL) dexs) dreln
+    <*> recursivelyImportExternalDomainExpression foreignMod foreignURL ex
+
+recursivelyImportExternalClassValue :: L2.L2Model -> L2.Identifier -> L2.L2ClassValueID -> ModelTranslation L2.L2ClassValueID
+recursivelyImportExternalClassValue =
+  cacheWrapExternalImport mtsForeignToLocalClassValue (\x m -> m{mtsForeignToLocalClassValue=x}) $
+    \foreignMod foreignURL foreignValueID -> do
+      let Just (L2.L2ClassValueContents ss dt) = M.lookup foreignValueID . L2.l2AllClassValues $ foreignMod
+      localValueContents <- L2.L2ClassValueContents ss <$>
+                              (recursivelyImportExternalDomainType foreignMod foreignURL dt)
+      newValueID <- (L2.l2NextClassValueID . mtsL2Model) <$> get
+      modifyL2Model $ \mod -> mod {
+        L2.l2NextClassValueID = (\(L2.L2ClassValueID i) -> L2.L2ClassValueID (i + 1)) newValueID,
+        L2.l2AllClassValues = M.insert newValueID localValueContents
+                                (L2.l2AllClassValues mod)
+        }
+      return newValueID
+
+recursivelyImportExternalClass :: L2.L2Model -> L2.Identifier -> L2.L2ClassID -> ModelTranslation L2.L2ClassID
+recursivelyImportExternalClass =
+  cacheWrapExternalImport mtsForeignToLocalClass (\x m -> m{mtsForeignToLocalClass=x}) $
+    \foreignMod foreignURL foreignClassID -> do
+      newClassID <- (L2.l2NextClassID . mtsL2Model) <$> get
+      let Just (L2.L2ClassContents ss p df vals) = M.lookup foreignClassID . L2.l2AllClasses $ foreignMod
+      localClassContents <- L2.L2ClassContents ss
+                              <$> mapM (\(sdid, k) ->
+                                         (,)
+                                           <$> recursivelyImportExternalScopedDomain foreignMod foreignURL sdid
+                                           <*> (pure k)) p
+                              <*> T.mapM (\dfid ->
+                                           recursivelyImportExternalDomainFunction foreignMod
+                                                                                   foreignURL dfid) df
+                              <*> T.mapM (\valueId ->
+                                           recursivelyImportExternalClassValue foreignMod foreignURL valueId) vals
+      modifyL2Model $ \mod -> mod {
+        L2.l2NextClassID = (\(L2.L2ClassID i) -> L2.L2ClassID (i + 1)) newClassID,
+        L2.l2AllClasses = M.insert newClassID localClassContents
+                            (L2.l2AllClasses mod)
+        }
+      return newClassID
+      
+recursivelyImportExternalDomainFunction :: L2.L2Model -> L2.Identifier -> L2.L2DomainFunctionID -> ModelTranslation L2.L2DomainFunctionID
+recursivelyImportExternalDomainFunction =
+  cacheWrapExternalImport mtsForeignToLocalDomainFunction (\x m -> m{mtsForeignToLocalDomainFunction=x}) $
+   \foreignMod foreignURL foreignDF -> do
+     newDFID <- (L2.l2NextDomainFunctionID . mtsL2Model) <$> get
+     -- No need for any translation...
+     let Just localDFContents = M.lookup foreignDF (L2.l2AllDomainFunctions foreignMod)
+     modifyL2Model $ \mod -> mod {
+       L2.l2NextDomainFunctionID = (\(L2.L2DomainFunctionID i) -> L2.L2DomainFunctionID (i + 1)) newDFID,
+       L2.l2AllDomainFunctions = M.insert newDFID localDFContents
+                                   (L2.l2AllDomainFunctions mod)
+       }
+     return newDFID
 
 -- | Takes an optional list of what to import to import, an optional list of what to hide, and a target namespace and model,
 --   and builds a list of symbols to import. Fails with an error if there is a symbol in the what or hiding list which
