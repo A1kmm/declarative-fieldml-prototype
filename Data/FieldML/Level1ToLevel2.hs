@@ -967,22 +967,12 @@ translateNSContents scope thisNSID done nsc = do
                         L1.l1nsClassArguments = args, L1.l1nsInstanceDomainFunctions = dfs,
                         L1.l1nsInstanceValues = vals } -> do
         -- Find the class...
-        (nspath, className) <- maybe (fail $ "Attempt to use an empty path as a class name, at " ++ show ss)
-                                     return $ trySplitRAPathOnLast cpath
-        mnsid <- findNamespaceByRAPath thisNSID nspath
-        case mnsid of
-          Nothing -> fail $ "Cannot resolve relative path " ++ (show cpath) ++ " to class for instance at " ++
-                            (show ss)
-          Just classNamespace -> do
-            cnsc <- getNamespaceContents classNamespace
-            classID <-
-                  maybe (fail $ "Cannot find class " ++ (BSC.unpack . L1.l1IdBS $ className) ++
-                                " named in instance at " ++ (show . L1.l1IdSS $ className))
-                        return
-                        (M.lookup (L1.l1IdBS className) (L2.l2nsClasses cnsc))
-            Just class' <- (M.lookup classID . L2.l2AllClasses) <$> getL2Model
-            l2args <- mapM (translateDomainType scope ss thisNSID done) args
-            l2dfs <- mapM (\(L1.L1Identifier ifss instfuncident, dts, dex) ->
+        classID <-
+          (findScopedSymbolByRAPath ss thisNSID cpath $ \nsc className ->
+            M.lookup (L1.l1IdBS className) (L2.l2nsClasses nsc))
+        Just class' <- (M.lookup classID . L2.l2AllClasses) <$> getL2Model
+        l2args <- mapM (translateDomainType scope ss thisNSID done) args
+        l2dfs <- mapM (\(L1.L1Identifier ifss instfuncident, dts, dex) ->
                             (,,) <$>
                               (case M.lookup instfuncident (L2.l2ClassDomainFunctions class') of
                                   Nothing -> fail $ "Instance refers to domain function " ++
@@ -994,16 +984,16 @@ translateNSContents scope thisNSID done nsc = do
                               (mapM (translateDomainType scope ss thisNSID done) dts) <*>
                               translateDomainExpression scope ss thisNSID done dex
                           ) dfs
-            l2exprs <- mapM (translateExpression scope ss thisNSID done) vals
-            modifyL2Model $ \mod ->
-              mod { L2.l2AllInstances = 
+        l2exprs <- mapM (translateExpression scope ss thisNSID done) vals
+        modifyL2Model $ \mod ->
+          mod { L2.l2AllInstances = 
                        (L2.L2InstanceContents { L2.l2InstanceSS = ss,
                                                 L2.l2InstanceOfClass = classID, 
                                                 L2.l2InstanceClassArguments = l2args,
                                                 L2.l2InstanceDomainFunctions = l2dfs,
                                                 L2.l2InstanceValues = l2exprs }):
                        (L2.l2AllInstances mod) }
-            return l2nsc
+        return l2nsc
   
 trySplitRAPathOnLast :: L1.L1RelOrAbsPath -> Maybe (L1.L1RelOrAbsPath, L1.L1Identifier)
 trySplitRAPathOnLast (L1.L1RelOrAbsPath ss ra p) =
@@ -1231,8 +1221,16 @@ translateDomainExpression scope _ nsid done (L1.L1DomainExpressionApply ss dom s
     <$> translateDomainExpression scope ss nsid done dom
     <*> pure (L1.l1ScopedIdBS scopedVar)
     <*> translateDomainExpression scope ss nsid done value
-translateDomainExpression scope _ nsid _ (L1.L1DomainFunctionEvaluate ss func args) = undefined -- TODO
-translateDomainExpression scope _ nsid _ (L1.L1DomainVariableRef ss scopedID) = undefined -- TODO
+translateDomainExpression scope _ nsid done (L1.L1DomainFunctionEvaluate ss func args) =
+  L2.L2DomainFunctionEvaluate ss
+    <$> findScopedSymbolByRAPath ss nsid func
+          (\nsc dfName ->
+              M.lookup (L1.l1IdBS dfName) (L2.l2nsDomainFunctions nsc)
+          )
+    <*> mapM (translateDomainExpression scope ss nsid done) args
+translateDomainExpression scope _ nsid _ (L1.L1DomainVariableRef ss scopedID) =
+  return $ L2.L2DomainVariableRef ss (L1.l1ScopedIdBS scopedID)
+
 translateDomainExpression scope _ nsid _ (L1.L1DomainReference _ (rapi@L1.L1RelOrAbsPathInt{})) = fail undefined -- TODO
 translateDomainExpression scope _ nsid _ (L1.L1DomainReference _ (L1.L1RelOrAbsPathNoInt ss ra rp)) = undefined -- TODO
 
