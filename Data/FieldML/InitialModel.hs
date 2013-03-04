@@ -6,6 +6,7 @@ import qualified Data.Map as M
 import Data.FieldML.Level2Structure
 import qualified Data.FieldML.Level1Structure as L1
 
+biSrcSpan :: L1.SrcSpan
 biSrcSpan = L1.SrcSpan "built-in" 0 0 0 0
 
 -- We reserve IDs 0-99 of certain counters for builtin use.
@@ -79,8 +80,6 @@ initialModel = L2Model {
   l2AllClasses = M.empty,
   l2NextClassID = L2ClassID reservedIDs,
   l2AllInstances = [],
-  l2ScopedDomainNames = M.empty,
-  l2NextScopedDomainID = L2ScopedDomainID reservedIDs,
   l2NextScopedValueID = L2ScopedValueID reservedIDs,
   l2NextScopedUnitID = L2ScopedUnitID reservedIDs,  
   l2AllDomainFunctions = M.empty,

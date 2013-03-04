@@ -16,7 +16,6 @@ newtype L2DomainID = L2DomainID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ValueID = L2ValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2BaseUnitsID = L2BaseUnitsID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ClassID = L2ClassID Int deriving (Eq, Ord, Data, Typeable, Show)
-newtype L2ScopedDomainID = L2ScopedDomainID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ScopedValueID = L2ScopedValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ScopedUnitID = L2ScopedUnitID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2DomainFunctionID = L2DomainFunctionID Int deriving (Eq, Ord, Data, Typeable, Show)
@@ -41,8 +40,6 @@ data L2Model =
     l2AllClasses :: M.Map L2ClassID L2ClassContents,
     l2NextClassID :: L2ClassID,
     l2AllInstances :: [L2InstanceContents],
-    l2ScopedDomainNames :: M.Map Identifier L2ScopedDomainID,
-    l2NextScopedDomainID :: L2ScopedDomainID,
     l2NextScopedValueID :: L2ScopedValueID,
     l2NextScopedUnitID :: L2ScopedUnitID,
     l2AllDomainFunctions :: M.Map L2DomainFunctionID L2DomainFunctionContents,
@@ -68,6 +65,8 @@ data L2NamespaceContents =
     l2nsNextLabel :: Int
   }
   deriving (Eq, Ord, Data, Typeable, Show)
+
+type L2ScopedDomainID = BS.ByteString
 
 data L2DomainContents =
   L2ClonelikeDomainContents {

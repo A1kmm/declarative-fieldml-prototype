@@ -33,4 +33,5 @@ executable runfieldml
    main-is: Data/FieldML/RunFieldML.hs
    build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, curl, monads-tf, bytestring, containers, uniplate, filepath
    ghc-prof-options: -auto-all -caf-all
+   ghc-shared-options: -shared -dynamic
 
