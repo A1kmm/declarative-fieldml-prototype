@@ -170,7 +170,7 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                  l1ExStringValue :: BS.ByteString } |
                     L1ExSignature { l1ExSS :: SrcSpan,
                                     l1ExExpression :: L1Expression,
-                                    l1ExSignature :: L1DomainExpression }
+                                    l1ExSignature :: L1DomainType }
                   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |

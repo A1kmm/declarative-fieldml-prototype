@@ -119,7 +119,7 @@ translateL1ToL2 mpath l1ns impmap =
       -- Change the tree into a DAG by processing imports.
       processNamespaceImports S.empty [] nsMain
       -- Process everything else now we have our starting names.
-      recursivelyTranslateModel S.empty S.empty [(biSrcSpan, L1NSPathStop)]
+      recursivelyTranslateModel nsMain S.empty S.empty [(biSrcSpan, L1NSPathStop)]
 
 type ForeignToLocal a = M.Map (L2.Identifier, a) a
 
@@ -169,6 +169,9 @@ data ScopeInformation = ScopeInformation {
   siUnitIDMap   :: M.Map L1.L1ScopedID L2.L2ScopedUnitID
   }
 
+instance Default ScopeInformation where
+  def = ScopeInformation M.empty M.empty M.empty
+
 type ModelTranslation a = StateT ModelTranslationState
                           (ReaderT (L1.L1NamespaceContents, String, M.Map BS.ByteString L2.L2Model)
                                   (ErrorT String IO)) a
@@ -188,12 +191,15 @@ recursivelyCreateNamespaces ss nsc@(L1.L1NamespaceContents c) canonPath parentNS
         recursivelyCreateNamespaces nsss newnsc (nsname:canonPath) myNSID
       _ -> return ()
 
+getL2Model :: ModelTranslation L2.L2Model
+getL2Model = mtsL2Model <$> get
+
 modifyL2Model :: (L2.L2Model -> L2.L2Model) -> ModelTranslation ()
 modifyL2Model f = modify $ \mts -> mts { mtsL2Model = f (mtsL2Model mts) }
 
 registerNewNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
 registerNewNamespace ss parent nsc = do
-  nsID <- (L2.l2NextNamespace . mtsL2Model) <$> get
+  nsID <- L2.l2NextNamespace <$> getL2Model
   modify $ \mts ->
     (
       mts { mtsL2Model = (mtsL2Model mts) {
@@ -214,7 +220,7 @@ modifyNamespaceContents ns f =
       }
 
 getNamespaceContents :: L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceContents
-getNamespaceContents nsid = (fromJust . M.lookup nsid . L2.l2AllNamespaces . mtsL2Model) <$> get
+getNamespaceContents nsid = (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
 
 findNamespace :: L2.L2NamespaceID -> BS.ByteString -> ModelTranslation (Maybe L2.L2NamespaceID)
 findNamespace parentNS nsName = do
@@ -336,18 +342,26 @@ recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC =
     (pure (L2.l2nsNextLabel foreignNSC))
 
 recursivelyImportExternalNS :: L2.L2Model -> L2.Identifier -> L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceID
-recursivelyImportExternalNS = cacheWrapExternalImport mtsForeignToLocalNS (\x m -> m {mtsForeignToLocalNS=x}) $
-                              \foreignMod foreignURL targetNS -> do
-  let foreignNSC = (L2.l2AllNamespaces foreignMod) ! targetNS
-  newNSC <- recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC
-  newNSID <- (L2.l2NextNamespace . mtsL2Model) <$> get
-  modifyL2Model $ \mod -> mod {
-    L2.l2NextNamespace = (\(L2.L2NamespaceID nid) -> L2.L2NamespaceID (nid + 1)) newNSID,
-    L2.l2AllNamespaces = M.insert newNSID
-                           newNSC (L2.l2AllNamespaces mod)
-    }
-  return newNSID
-  
+recursivelyImportExternalNS =
+  cacheWrapExternalImport mtsForeignToLocalNS (\x m -> m {mtsForeignToLocalNS=x}) $
+    \foreignMod foreignURL targetNS ->
+    if ((\L2.L2NamespaceID n -> n) targetNS) < reservedIDs && targetNS /= nsMain
+       -- Reserved IDs are a special case: We match on them numerically, and
+       -- they are globally unique, so just re-use the same numerical ID. We exclude
+       -- nsMain, however, because that is actually 
+    then return targetNS
+    else
+      do
+        let foreignNSC = (L2.l2AllNamespaces foreignMod) ! targetNS
+        newNSC <- recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC
+        newNSID <- L2.l2NextNamespace <$> getL2Model
+        modifyL2Model $ \mod -> mod {
+          L2.l2NextNamespace = (\(L2.L2NamespaceID nid) -> L2.L2NamespaceID (nid + 1)) newNSID,
+          L2.l2AllNamespaces = M.insert newNSID
+                               newNSC (L2.l2AllNamespaces mod)
+          }
+        return newNSID
+
 recursivelyImportExternalDomain :: L2.L2Model -> L2.Identifier -> L2.L2DomainType -> ModelTranslation L2.L2DomainType
 recursivelyImportExternalDomain foreignMod foreignURL targetDomain =
   L2.L2DomainType (L2.l2DomainTypeSS targetDomain)
@@ -384,7 +398,7 @@ recursivelyImportExternalUnitExpression foreignMod foreignURL targetEx =
 recursivelyImportExternalScopedUnit :: L2.L2Model -> L2.Identifier -> L2.L2ScopedUnitID -> ModelTranslation L2.L2ScopedUnitID
 recursivelyImportExternalScopedUnit = cacheWrapExternalImport mtsForeignToLocalScopedUnit (\x m -> m {mtsForeignToLocalScopedUnit = x}) $
                                       \foreignMod foreignURL targetSUID -> do
-  newSUID <- (L2.l2NextScopedUnitID . mtsL2Model) <$> get
+  newSUID <- L2.l2NextScopedUnitID <$> getL2Model
   modifyL2Model $ \mod -> mod {
     L2.l2NextScopedUnitID = (\(L2.L2ScopedUnitID i) -> L2.L2ScopedUnitID (i + 1)) newSUID
     }
@@ -393,7 +407,7 @@ recursivelyImportExternalScopedUnit = cacheWrapExternalImport mtsForeignToLocalS
 recursivelyImportExternalScopedDomain :: L2.L2Model -> L2.Identifier -> L2.L2ScopedDomainID -> ModelTranslation L2.L2ScopedDomainID
 recursivelyImportExternalScopedDomain = cacheWrapExternalImport mtsForeignToLocalScopedDomain (\x m -> m {mtsForeignToLocalScopedDomain = x}) $
                                       \foreignMod foreignURL targetSDID -> do
-  newSDID <- (L2.l2NextScopedDomainID . mtsL2Model) <$> get
+  newSDID <- L2.l2NextScopedDomainID <$> getL2Model
   modifyL2Model $ \mod -> mod {
     L2.l2NextScopedDomainID = (\(L2.L2ScopedDomainID i) -> L2.L2ScopedDomainID (i + 1)) newSDID
     }
@@ -402,7 +416,7 @@ recursivelyImportExternalScopedDomain = cacheWrapExternalImport mtsForeignToLoca
 recursivelyImportExternalScopedValue :: L2.L2Model -> L2.Identifier -> L2.L2ScopedValueID -> ModelTranslation L2.L2ScopedValueID
 recursivelyImportExternalScopedValue = cacheWrapExternalImport mtsForeignToLocalScopedValue (\x m -> m {mtsForeignToLocalScopedValue = x}) $
                                       \foreignMod foreignURL targetSVID -> do
-  newSVID <- (L2.l2NextScopedValueID . mtsL2Model) <$> get
+  newSVID <- L2.l2NextScopedValueID <$> getL2Model
   modifyL2Model $ \mod -> mod {
     L2.l2NextScopedValueID = (\(L2.L2ScopedValueID i) -> L2.L2ScopedValueID (i + 1)) newSVID
     }
@@ -411,7 +425,7 @@ recursivelyImportExternalScopedValue = cacheWrapExternalImport mtsForeignToLocal
 recursivelyImportExternalBaseUnit :: L2.L2Model -> L2.Identifier -> L2.L2BaseUnitsID -> ModelTranslation L2.L2BaseUnitsID
 recursivelyImportExternalBaseUnit = cacheWrapExternalImport mtsForeignToLocalBaseUnits (\x m -> m{mtsForeignToLocalBaseUnits=x}) $
                                     \foreignMod foreignURL bu -> do
-  newBUID <- (L2.l2NextBaseUnits . mtsL2Model) <$> get  
+  newBUID <- L2.l2NextBaseUnits <$> getL2Model
   modifyL2Model $ \mod -> mod {
     L2.l2NextBaseUnits = (\(L2.L2BaseUnitsID i) -> L2.L2BaseUnitsID (i + 1)) newBUID,
     -- Note that L2BaseUnitContents only contains a SrcSpan so needs no translation...
@@ -501,9 +515,10 @@ recursivelyImportExternalExpression foreignMod foreignURL targetEx =
                                   <$> recursivelyImportExternalLabel foreignMod foreignURL l
                                   <*> recursivelyImportExternalExpression foreignMod foreignURL ex
                               ) values
-    L2.L2ExLet ss expr closure ->
+    L2.L2ExLet ss expr closureNS closureExprs ->
       L2.L2ExLet ss <$> recursivelyImportExternalExpression foreignMod foreignURL expr
-                    <*> recursivelyImportExternalNSContents foreignMod foreignURL closure
+                    <*> recursivelyImportExternalNS foreignMod foreignURL closureNS
+                    <*> mapM (recursivelyImportExternalExpression foreignMod foreignURL) closureExprs
     L2.L2ExString ss bs -> pure $ L2.L2ExString ss bs
     L2.L2ExSignature ss ex sig ->
       L2.L2ExSignature ss
@@ -520,7 +535,7 @@ recursivelyImportExternalValue =
   cacheWrapExternalImport mtsForeignToLocalValues (\x m -> m{mtsForeignToLocalValues=x}) $
     \foreignMod foreignURL foreignValueID -> do
       let foreignValueContents = (fromJust . M.lookup foreignValueID . L2.l2AllValues $ foreignMod)
-      newValueID <- (L2.l2NextValue . mtsL2Model) <$> get
+      newValueID <- L2.l2NextValue <$> getL2Model
       localValueContents <- L2.L2ValueContents (L2.l2ValueSS foreignValueContents) <$>
                               maybe (return Nothing)
                                 (\fvc -> Just <$>
@@ -551,7 +566,7 @@ recursivelyImportExternalClassValue =
       let Just (L2.L2ClassValueContents ss dt) = M.lookup foreignValueID . L2.l2AllClassValues $ foreignMod
       localValueContents <- L2.L2ClassValueContents ss <$>
                               (recursivelyImportExternalDomainType foreignMod foreignURL dt)
-      newValueID <- (L2.l2NextClassValueID . mtsL2Model) <$> get
+      newValueID <- L2.l2NextClassValueID <$> getL2Model
       modifyL2Model $ \mod -> mod {
         L2.l2NextClassValueID = (\(L2.L2ClassValueID i) -> L2.L2ClassValueID (i + 1)) newValueID,
         L2.l2AllClassValues = M.insert newValueID localValueContents
@@ -563,7 +578,7 @@ recursivelyImportExternalClass :: L2.L2Model -> L2.Identifier -> L2.L2ClassID ->
 recursivelyImportExternalClass =
   cacheWrapExternalImport mtsForeignToLocalClass (\x m -> m{mtsForeignToLocalClass=x}) $
     \foreignMod foreignURL foreignClassID -> do
-      newClassID <- (L2.l2NextClassID . mtsL2Model) <$> get
+      newClassID <- L2.l2NextClassID <$> getL2Model
       let Just (L2.L2ClassContents ss p df vals) = M.lookup foreignClassID . L2.l2AllClasses $ foreignMod
       localClassContents <- L2.L2ClassContents ss
                               <$> mapM (\(sdid, k) ->
@@ -586,7 +601,7 @@ recursivelyImportExternalDomainFunction :: L2.L2Model -> L2.Identifier -> L2.L2D
 recursivelyImportExternalDomainFunction =
   cacheWrapExternalImport mtsForeignToLocalDomainFunction (\x m -> m{mtsForeignToLocalDomainFunction=x}) $
    \foreignMod foreignURL foreignDF -> do
-     newDFID <- (L2.l2NextDomainFunctionID . mtsL2Model) <$> get
+     newDFID <- L2.l2NextDomainFunctionID <$> getL2Model
      -- No need for any translation...
      let Just localDFContents = M.lookup foreignDF (L2.l2AllDomainFunctions foreignMod)
      modifyL2Model $ \mod -> mod {
@@ -655,41 +670,34 @@ findNamespaceInL2UsingL1Path ns0 l2mod (L1.L1RelPath _ ((L1.L1Identifier ss l1id
 -- these paths being translated first - if any of them are a dependency of this list
 -- of needed parts, it means the model has an invalid cyclic reference. done contains
 -- a set of the model parts that have already been translated.
-recursivelyTranslateModel :: S.Set L1NSPath -> S.Set L1NSPath -> [(L2.SrcSpan, L1NSPath)] -> ModelTranslation ()
-recursivelyTranslateModel deferred done queue =
+recursivelyTranslateModel :: L2.L2NamespaceID -> S.Set L1NSPath -> S.Set L1NSPath -> [(L2.SrcSpan, L1NSPath)] -> ModelTranslation ()
+recursivelyTranslateModel thisNSID deferred done queue =
   if null queue
     then return ()
     else
       do
         let firstEntry = head queue
-        r <- tryTranslatePartNow firstEntry done
+        r <- tryTranslatePartNow thisNSID firstEntry done
         case r of
           Nothing ->
-            recursivelyTranslateModel (S.delete (snd firstEntry) deferred)
-                                      (S.insert (snd firstEntry) done)
-                                      (tail queue)
+            recursivelyTranslateModel thisNSID (S.delete (snd firstEntry) deferred)
+                                               (S.insert (snd firstEntry) done)
+                                               (tail queue)
           Just deps ->
             forM_ deps $ \dep ->
               when (S.member dep deferred) $
                 fail ("The model contains an illegal reference cycle - need to process " ++
                       show dep ++ " to process " ++ show firstEntry ++ ", and vice versa.")
-              recursivelyTranslateModel (S.insert (snd firstEntry) deferred) done
+              recursivelyTranslateModel thisNSID (S.insert (snd firstEntry) deferred) done
                 ((map (\x -> (fst firstEntry, x)) deps) ++ queue)
-
--- | Finds a statement in a model. context describes where the references come from, and are
---   used for error reporting and cycle detection. The L1RelPath is an absolute path from the
---   beginning of the model to the targeted statement.
---   Produces 'Nothing' if the reference turns out to be in an import.
-findRelevantStatement :: [L2.SrcSpan] -> L1.L1RelPath -> ModelTranslation (Maybe L1.L1NamespaceStatement)
-findRelevantStatement context ref = undefined -- TODO
 
 -- | Attempts to translate the model part referred to by snd p from the Level 1 structure
 -- into the Level 2 structure. done is the set of all paths that were already translated.
 -- fst p gives a SrcSpan that referenced this model part.
-tryTranslatePartNow :: (L2.SrcSpan, L1NSPath) -> S.Set L1NSPath -> ModelTranslation (Maybe [L1NSPath])
-tryTranslatePartNow p done = do
+tryTranslatePartNow :: L2.L2NamespaceID -> S.Set L1NSPath -> ModelTranslation (Maybe [L1NSPath])
+tryTranslatePartNow thisNSID p done = do
   (l1ns, _, _) <- ask
-  tryTranslatePartNow' p done nsMain l1ns id Nothing
+  tryTranslatePartNow' p done thisNSID l1ns id Nothing
 
 tryTranslatePartNow' :: (L1.SrcSpan, L1NSPath) -> S.Set L1NSPath -> L2.L2NamespaceID -> L1.L1NamespaceContents ->
                         (L1NSPath -> L1NSPath) ->
@@ -697,7 +705,7 @@ tryTranslatePartNow' :: (L1.SrcSpan, L1NSPath) -> S.Set L1NSPath -> L2.L2Namespa
                         ModelTranslation (Maybe [L1NSPath])
 tryTranslatePartNow' (ssFrom, nsp@(L1NSPathNamespace nsName nsPath)) done thisNSID (L1.L1NamespaceContents l1ns) pToHere domainDetails =
   let nextLevel = [(ss, nc, Nothing) | L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = L1.L1Identifier _ nn,
-                                                        L1.l1nsNamespaceContents = nc } <- l1ns,
+                                                          L1.l1nsNamespaceContents = nc } <- l1ns,
                                      nn == nsName] ++
                   [(ss, nc, Just (dp, dd)) | L1.L1NSDomain { L1.l1nsSS = ss, L1.l1nsDomainName = L1.L1Identifier _ nn,
                                                              L1.l1nsDomainParameters = dp, L1.l1nsDomainDefinition = dd,
@@ -723,7 +731,7 @@ tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID nsc pToHere (Just (dom
   (case M.lookup nameInParent (L2.l2nsDomains parentContents) of
     Just dd -> return Nothing
     Nothing -> do
-      ttdd <- tryTranslateDomainDefinition ssFrom done thisNSID domainParameters domainDefinition
+      ttdd <- tryTranslateDomainDefinition ssFrom done thisNSID pToHere domainParameters domainDefinition
       case ttdd of
         Left deps -> return $ Just deps
         Right domType -> do
@@ -820,7 +828,7 @@ translateNSContents scope thisNSID nsc = do
                    showString " refers to a namespace " .
                    shows rapath $ " that doesn't exist."
           Just impFrom -> do
-            allSyms <- (S.fromList . allSymbolNames impFrom . mtsL2Model) <$> get
+            allSyms <- (S.fromList . allSymbolNames impFrom) <$> getL2Model
             impContents <- getNamespaceContents impFrom
             let whatSet = S.fromList <$> what
             let hidingSet = S.fromList <$> hidingWhat
@@ -881,7 +889,7 @@ translateNSContents scope thisNSID nsc = do
       L1.L1NSNamedValue { L1.l1nsSS = ss, L1.l1nsValueName = L1.L1Identifier { L1.l1IdBS = n },
                           L1.l1nsDomainType = mt } -> do
         l2t <- maybe (return Nothing) (\t -> Just <$> translateDomainType scope ss thisNSID t) mt
-        valueID <- (L2.l2NextValue . mtsL2Model) <$> get
+        valueID <- L2.l2NextValue <$> getL2Model
         modifyL2Model $ \mod -> mod {
           L2.l2NextValue = L2.L2ValueID ((\(L2.L2ValueID n) -> n + 1) valueID),
           L2.l2AllValues = M.insert valueID (L2.L2ValueContents ss l2t) (L2.l2AllValues mod)
@@ -899,7 +907,7 @@ translateNSContents scope thisNSID nsc = do
                 fail $ "Scoped domain identifier " ++ (BSC.unpack domIDName) ++
                        " appears multiple times in the same class signature, at " ++
                        (show domIDSS)
-              l2domID <- (L2.l2NextScopedDomainID . mtsL2Model) <$> get
+              l2domID <- L2.l2NextScopedDomainID <$> getL2Model
               modifyL2Model $ \mod -> mod {
                 L2.l2NextScopedDomainID = (\(L2.L2ScopedDomainID v) -> L2.L2ScopedDomainID (v + 1)) l2domID
                 }
@@ -912,7 +920,7 @@ translateNSContents scope thisNSID nsc = do
                 fail $ "Domain function identifier " ++ (BSC.unpack dfname) ++
                        " appears multiple times in the same class signature, at " ++
                        (show dfss)
-              dfID <- (L2.l2NextDomainFunctionID . mtsL2Model) <$> get
+              dfID <- L2.l2NextDomainFunctionID <$> getL2Model
               modifyL2Model $ \mod -> mod {
                   L2.l2AllDomainFunctions = M.insert dfID (L2.L2DomainFunctionContents dfss nargs)
                                                           (L2.l2AllDomainFunctions mod),
@@ -926,7 +934,7 @@ translateNSContents scope thisNSID nsc = do
                 fail $ "Class value identifier " ++ (BSC.unpack cvname) ++
                        " appears multiple times in the same class signature, at " ++
                        (show cvss)
-              cvID <- (L2.l2NextClassValueID . mtsL2Model) <$> get
+              cvID <- L2.l2NextClassValueID <$> getL2Model
               l2cvtype <- translateDomainType scope' ss thisNSID cvtype
               modifyL2Model $ \mod -> mod {
                   L2.l2AllClassValues = M.insert cvID (L2.L2ClassValueContents cvss l2cvtype)
@@ -939,7 +947,7 @@ translateNSContents scope thisNSID nsc = do
                                         L2.l2ClassDomainFunctions = M.fromList ldfnames,
                                         L2.l2ClassValues = M.fromList lcvnames
                                       }
-        cid <- (L2.l2NextClassID . mtsL2Model) <$> get
+        cid <- L2.l2NextClassID <$> getL2Model
         -- Register the class globally...
         modifyL2Model $ \mod -> mod { L2.l2AllClasses = M.insert cid l2cc (L2.l2AllClasses mod), 
                                       L2.l2NextClassID = (\(L2.L2ClassID n) -> L2.L2ClassID (n + 1)) cid }
@@ -988,7 +996,7 @@ translateNSContents scope thisNSID nsc = do
                                 " named in instance at " ++ (show . L1.l1IdSS $ className))
                         return
                         (M.lookup (L1.l1IdBS className) (L2.l2nsClasses cnsc))
-            Just class' <- (M.lookup classID . L2.l2AllClasses . mtsL2Model) <$> get
+            Just class' <- (M.lookup classID . L2.l2AllClasses) <$> getL2Model
             l2args <- mapM (translateDomainType scope ss thisNSID) args
             l2dfs <- mapM (\(L1.L1Identifier ifss instfuncident, dts, dex) ->
                             (,,) <$>
@@ -1017,7 +1025,7 @@ trySplitRAPathOnLast :: L1.L1RelOrAbsPath -> Maybe (L1.L1RelOrAbsPath, L1.L1Iden
 trySplitRAPathOnLast (L1.L1RelOrAbsPath ss ra p) =
    maybe Nothing (\(x, y) -> Just (L1.L1RelOrAbsPath ss ra x, y))
          (trySplitRPathOnLast p)
-   
+
 trySplitRPathOnLast (L1.L1RelPath rpss []) = Nothing
 trySplitRPathOnLast (L1.L1RelPath rpss l) = Just (L1.L1RelPath rpss (init l), last l)
 
@@ -1027,19 +1035,166 @@ mapMaybeM f l = catMaybes `liftM` sequence (map f l)
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f l = concat `liftM` sequence (map f l)
 
-tryTranslateDomainDefinition :: L1.SrcSpan -> S.Set L1NSPath -> L2.L2NamespaceID -> [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation (Either [L1NSPath] L2.L2DomainType)
-tryTranslateDomainDefinition ssFrom done nsid domainVars domainDef = undefined -- TODO
+allocDomainID :: ModelTranslation L2.L2DomainID
+allocDomainID = do
+  newID <- L2.l2NextDomain <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2NextDomain = (\(L2.L2DomainID n) -> L2.L2DomainID (n + 1)) }
+  return newID
 
-tryFindImportOf l1ns nsName = undefined -- TODO
+tryTranslateDomainDefinition :: L1.SrcSpan -> S.Set L1NSPath -> L2.L2NamespaceID -> (L1NSPath -> L1NSPath)
+                                -> [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation (Either [L1NSPath] L2.L2DomainType)
+tryTranslateDomainDefinition ssFrom done nsid pToHere domainVars dd = do
+  deps <- getDomainDefinitionDependencies pToHere dd
+  let missing = S.toList ((S.fromList deps) `S.difference` done)
+  if null missing
+    then Right <$> translateDomainDefinition def ssFrom nsid [] dd
+    else return . Left $ missing
+
+foldOverNSScopesM :: (s -> L2.L2NamespaceID -> ModelTranslation s) -> s -> L2.L2NamespaceID -> ModelTranslation s
+foldOverNSScopesM f s0 nsid = do
+  s1 <- f s0 nsid
+  nsc <- (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+  foldOverNSScopesM f s1 (L2.l2nsParent nsc)
+
+findScopedSymbolByRAPath :: L1.SrcSpan -> L2.L2NamespaceID -> L1.L1RelOrAbsPath ->
+                            (L2.L2NamespaceContents -> L1.L1Identifier -> Maybe a) -> ModelTranslation a
+findScopedSymbolByRAPath ss startNS ra tryGet = do
+  (nsra, symName) <- maybe (fail $ "Inappropriate use of an empty path, at " ++ show ss)
+                             return $ trySplitRAPathOnLast ra
+  -- Recursively find the namespace...
+  nsid <- maybe (fail $ "Cannot find namespace " ++ show nsra ++ " mentioned at " ++ show ss) return $
+          findNamespaceByRAPath startNS nsra
+  let foldStrategy =
+        if (rp && empty (L1.l1RelPathIDs nsra))
+           then flip (flip foldOverNSScopesM Nothing) nsid
+           else (\x -> x Nothing nsid)
+  r <- foldStrategy $ \s nsid' -> (mplus s) <$> do
+    nsc <- (M.lookup nsid' . L2.l2AllNamespaces) <$> getL2Model
+    return $ tryGet nsc symName
+  maybe (fail $ "Symbol " ++ (BS.unpack . L1.l1IdBS $ symName) ++
+                " not found in namespace at " ++ (show . L1.l1IdSS $ symName)) return r
+
+translateLabel :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1RelOrAbsPathPossiblyIntEnd -> ModelTranslation L1.L1Expression
+translateLabel scope _ nsid (L1.L1RelOrAbsPathInt pss ra rp v) = do
+  nsid' <- maybe (fail $ "Cannot find namespace " ++ (show ra) ++ " mentioned at " ++ show pss)
+                return $ findNamespaceByRAPath nsid (L1.L1RelOrAbsPath pss ra rp)
+  when (nsid' /= nsInteger && nsid' /= nsNatural) . fail $
+    "Literal integer syntax can only be used to refer to labels in the \
+    \built in Integer and Natural domains(e.g. Natural:1), so usage at " ++
+    (show pss) ++ " is invalid."
+  when (nsid' == nsNatural && v < 0) . fail $
+    "Attempt to reference a negative natural number, at " ++ (show pss)
+  return $ L2.L2Label nsid' (fromIntegral v)
+
+translateLabel scope _ nsid (L1.L1RelOrAbsPathNoInt pss ra rp) = do
+  let ra = L1.L1RelOrAbsPath pss ra rp
+  findScopedSymbolByRAPath pss nsid ra $ \nsc labelName ->
+    case M.lookup (L1.l1IdBS labelName) (L2.l2nsLabels nsc) of
+      Just l -> Just $ L2.L2ExReferenceLabel ss l
+      Nothing ->
+        case M.lookup (L1.l1IdBS labelName) (L2.l2nsNamedValues nsc) of
+          Just nv -> Just $ L2.L2ExReferenceValue nv
+          Nothing -> case M.lookup (L1.l1IdBS labelName) (L2.l2nsClassValues nsc) of
+            Just cv -> Just $ L2.L2ExReferenceClassValue nv
+            Nothing -> Nothing
 
 translateExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1Expression -> ModelTranslation L2.L2Expression
-translateExpression = undefined -- TODO
+translateExpression scope _ nsid (L1.L1ExApply ss op arg) =
+  L2.L2ExApply ss <$> translateExpression scope ss nsid op
+                  <*> translateExpression scope ss nsid arg
+
+translateExpression scope _ nsid (L1.L1ExReference ss l) = do
+  l2l <- translateLabel scope ss nsid l
+  return $ L2.L2ExReferenceLabel ss l2l
+
+translateExpression scope _ _ (L1.L1ExBoundVariable ss (L1.L1ScopedID idss scopedID)) =
+  L2.L2ExBoundVariable ss <$>
+    maybe (fail $ "Reference to unknown local variable at " ++ show idss)
+          return (M.lookup scopedID (siValueIDMap scope))
+
+translateExpression scope _ nsid (L1.L1ExLiteralReal ss units rv) =
+  L2.L2ExLiteralReal ss
+    <$> translateUnitExpression scope ss nsid units
+    <*> (pure rv)
+
+translateExpression scope _ nsid (L1.L1ExMkProduct ss values) =
+  L2.L2ExMkProduct ss
+    <$> mapM (\(l, ex) ->
+               (,) <$> translateLabel scope ss nsid l
+                   <*> translateExpression scope ss nsid ex
+             ) values
+
+translateExpression scope _ nsid (L1.L1ExMkUnion ss label value) =
+  L2.L2ExMkUnion ss
+    <$> translateLabel scope ss nsid label
+    <*> translateExpression scope ss nsid value
+
+translateExpression scope _ nsid (L1.L1ExProject ss label) =
+  L2.L2ExProject ss
+    <$> translateLabel scope ss nsid label
+
+translateExpression scope _ nsid (L1.L1ExAppend ss label) =
+  L2.L2ExAppend ss
+    <$> translateLabel scope ss nsid label
+
+translateExpression scope _ nsid (L1.L1ExLambda ss bvar value) = do
+  newBVar <- L2.l2NextScopedValueID <$> getL2Model
+  modifyL2Model $ \mod -> mod {
+    L2.l2NextScopedValueID = (\(L2.L2ScopedValueID n) ->
+                               L2.L2ScopedValueID (n + 1)) newBVar }
+  L2.L2ExLambda ss newBVar <$>
+      translateExpression (scope { siValueIDMap = M.insert bvar newBVar (siValueIDMap scope)})
+                           ss nsid value
+
+translateExpression scope _ nsid (L1.L1ExCase ss expr values) =
+  L2.L2ExCase ss
+    <$> translateExpression scope ss nsid expr
+    <*> mapM (\(l, cex) ->
+               (,)
+                 <$> translateLabel scope ss nsid l
+                 <*> translateExpression scope ss nsid cex) values
+
+translateExpression scope _ nsid (L1.L1ExLet ss expr closure) = do
+  letNS <- registerNewNamespace ss nsid closure
+  (_, nsAsserts) <-
+    isolateAssertions
+      (recursivelyTranslateModel letNS deferred done [(ss, L1NSPathStop)])
+  L2.L2ExLet ss
+    <$> translateExpression scope ss letNS expr
+    <*> (pure nsAsserts)
+
+translateExpression scope _ nsid (L1.L1ExString ss sv) = do
+  L2.L2ExString ss sv
+  
+translateExpression scope _ nsid (L1.L1ExSignature ss ex sig) = do
+  L2.L2ExSignature ss <$> (translateExpression scope ss nsid ex)
+                      <*> (translateDomainType scope ss nsid sig)
 
 translateUnitExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1UnitExpression -> ModelTranslation L2.L2UnitExpression
-translateUnitExpression = undefined -- TODO
+translateUnitExpression scope _ nsid (L1.L1UnitExDimensionless ss) =
+  pure $ L2.L2UnitExDimensionless ss
+translateUnitExpression scope _ nsid (L1.L1UnitExRef ss refpath) =
+  findScopedSymbolByRAPath ss nsid refpath $ \nsc unitName -> M.lookup unitName (L2.l2nsUnits nsc)
+translateUnitExpression scope _ nsid (L1.L1UnitExTimes ss expr1 expr2) =
+  L2.L2UnitExTimes ss <$> translateUnitExpression scope ss nsid expr1
+                      <*> translateUnitExpression scope ss nsid expr2
+translateUnitExpression scope _ nsid (L1.L1UnitPow ss expr1 powerOf) =
+  L2.L2UnitPow ss <$> (translateUnitExpression scope ss nsid expr1)
+                  <*> (pure powerOf)
+translateUnitExpression scope _ nsid (L1.L1UnitScalarMup ss scalv expr1) =
+  L2.L2UnitScalarMup ss scalv <$> (translateUnitExpression scope ss nsid expr1)
+translateUnitExpression scope _ nsid (L1.L1UnitScopedVar ss scopedv) =
+  L2.L2UnitScopedVar ss (translateUnitExpression scope ss nsid scopedv)
 
 translateUnitDefinition :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1UnitDefinition -> ModelTranslation L2.L2UnitExpression
-translateUnitDefinition = undefined -- TODO
+translateUnitDefinition scope _ nsid (L1.L1UnitDefNewBase ss) = do
+  buID <- L2.l2NextBaseUnits <$> getL2Model
+  modifyL2Model $ \mod ->
+    mod { L2.l2NextBaseUnits = (\(L2.L2BaseUnitsID n) -> L2.L2BaseUnitsID (n + 1)),
+          L2.l2AllBaseUnits = M.insert buID (L2.L2BaseUnitContents ss) (L2.l2AllBaseUnits mod) }
+  return $ L2.L2UnitExRef ss buID
+translateUnitDefinition scope _ nsid (L1.L1UnitDefUnitExpr ss expr) =
+  translateUnitExpression scope ss nsid expr
 
 translateDomainExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1DomainExpression -> ModelTranslation L2.L2DomainExpression
 translateDomainExpression = undefined -- TODO
@@ -1051,6 +1206,17 @@ translateDomainDefinition = undefined -- TODO
 translateDomainType :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1DomainType -> ModelTranslation L2.L2DomainType
 translateDomainType = undefined -- TODO
 
+-- | Runs a model translation such that any new assertions that are added do not
+--   end up in the global assertion list, but instead becomes part of the result.
+isolateAssertions :: ModelTranslation a -> ModelTranslation (a, [L2.L2Expression])
+isolateAssertions f = do
+  origAssertions <- L2.l2AllAssertions <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = [] }
+  r <- f
+  newAssertions <- L2.l2AllAssertions <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = origAssertions }
+  return (r, newAssertions)
+
 -- | Recursively change a path to the equivalent path that does not reference
 --   any local imports. Produces Nothing if a symbol eventually refers to a
 --   non-local import; leaves symbols which don't have any imports unchanged.
@@ -1058,6 +1224,18 @@ translateDomainType = undefined -- TODO
 --   doesn't exist.
 ensureNoLocalImports :: L1NSPath -> ModelTranslation (Maybe L1NSPath)
 ensureNoLocalImports p = undefined -- TODO
+
+getDomainDefinitionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1DomainDefinition -> ModelTranslation [L1NSPath]
+getDomainDefinitionDependencies pToHere (L1.L1CloneDomain _ dt) =
+  getDomainTypeDependencies pToHere dt
+getDomainDefinitionDependencies pToHere (L1.L1SubsetDomain _ dt susing) =
+  getExpressionDependencies pToHere susing ++
+  getDomainTypeDependencies pToHere dt
+getDomainDefinitionDependencies pToHere (L1.L1ConnectDomain _ dt cusing) =
+  getExpressionDependencies pToHere cusing ++
+  getDomainTypeDependencies pToHere dt
+getDomainDefinitionDependencies pToHere (L1.L1DomainDefDomainType _ dt) =
+  getDomainTypeDependencies pToHere dt
 
 getExpressionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1Expression -> ModelTranslation [L1NSPath]
 getExpressionDependencies pToHere ex = undefined -- TODO
@@ -1073,7 +1251,7 @@ getDomainExpressionDependencies pToHere dex = undefined -- TODO
 
 -- | Finds a Level 2 namespace using a Level 1 RelOrAbsPath
 findNamespaceByRAPath :: L2.L2NamespaceID -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L2.L2NamespaceID)
-findNamespaceByRAPath thisNSID rapath = undefined -- TODO
+findNamespaceByRAPath thisNSID rapath = foldOverNSScopesM undefined undefined thisNSID -- TODO
 
 arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation L1NSPath
 arpathToNSPathFn p (L1.L1RelOrAbsPath ss abs rp) = rpathToNSPathFn ss p abs rp

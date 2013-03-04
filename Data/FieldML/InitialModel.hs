@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Data.FieldML.InitialModel (initialModel, blankNamespaceContents, nsBuiltinMain, nsSpecial, nsMain, biSrcSpan, nsNatural, nsInteger)
+module Data.FieldML.InitialModel (initialModel, blankNamespaceContents, nsBuiltinMain, nsSpecial, nsMain, biSrcSpan, nsNatural, nsInteger, reservedIDs)
 where
 
 import qualified Data.Map as M

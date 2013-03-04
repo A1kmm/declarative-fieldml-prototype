@@ -126,10 +126,12 @@ data L2Expression = L2ExApply { l2ExSS :: SrcSpan, l2ExOp :: L2Expression, l2ExA
                                  l2ExValue :: L2Expression } |
                     L2ExCase { l2ExSS :: SrcSpan, l2ExExpr :: L2Expression,
                                l2ExValues :: [(L2Label, L2Expression)]} |
-                    L2ExLet { l2ExSS :: SrcSpan, l2ExExpr :: L2Expression, l2ExClosure :: L2NamespaceContents } |
+                    L2ExLet { l2ExSS :: SrcSpan, l2ExExpr :: L2Expression,
+                              l2ExClosureNS :: L2NamespaceID,
+                              l2ExClosureAssertions :: [L2Expression] } |
                     L2ExString { l2ExSS :: SrcSpan, l2ExStringValue :: BS.ByteString } |
                     L2ExSignature { l2ExSS :: SrcSpan, l2ExExpression :: L2Expression,
-                                    l2ExSignature :: L2DomainExpression }
+                                    l2ExSignature :: L2DomainType }
                       deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2UnitExpression = L2UnitExDimensionless { l2UnitExSS :: SrcSpan } |
