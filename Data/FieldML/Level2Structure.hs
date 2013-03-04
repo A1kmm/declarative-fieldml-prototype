@@ -22,7 +22,6 @@ newtype L2ScopedUnitID = L2ScopedUnitID Int deriving (Eq, Ord, Data, Typeable, S
 newtype L2DomainFunctionID = L2DomainFunctionID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ClassValueID = L2ClassValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 
-type L2ScopedDomainMap = M.Map Identifier L2ScopedDomainID
 type L2ScopedValueMap = M.Map Identifier L2ScopedValueID
 type L2ScopedUnitMap = M.Map Identifier L2ScopedUnitID
 
@@ -42,6 +41,7 @@ data L2Model =
     l2AllClasses :: M.Map L2ClassID L2ClassContents,
     l2NextClassID :: L2ClassID,
     l2AllInstances :: [L2InstanceContents],
+    l2ScopedDomainNames :: M.Map Identifier L2ScopedDomainID,
     l2NextScopedDomainID :: L2ScopedDomainID,
     l2NextScopedValueID :: L2ScopedValueID,
     l2NextScopedUnitID :: L2ScopedUnitID,

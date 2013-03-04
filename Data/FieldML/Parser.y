@@ -322,7 +322,7 @@ expression
       L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
     }
   | expression PathSep domainType %prec expressionSig {
-      L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainExpressionSS $3)) $1 $3
+      L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainTypeSS $3)) $1 $3
     }
 
 expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {

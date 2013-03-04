@@ -79,6 +79,7 @@ initialModel = L2Model {
   l2AllClasses = M.empty,
   l2NextClassID = L2ClassID reservedIDs,
   l2AllInstances = [],
+  l2ScopedDomainNames = M.empty,
   l2NextScopedDomainID = L2ScopedDomainID reservedIDs,
   l2NextScopedValueID = L2ScopedValueID reservedIDs,
   l2NextScopedUnitID = L2ScopedUnitID reservedIDs,  
