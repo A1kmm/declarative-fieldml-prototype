@@ -749,14 +749,12 @@ tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID (L1.L1NamespaceContent
                 L1.l1nsImportWhat = what,
                 L1.l1nsImportHiding = hiding,
                 L1.l1nsImportAs = impId } -> do
-                  maybeToList <$> (ensureNoLocalImports =<<
+                  maybeToList <$> (maybe (return Nothing) ensureNoLocalImports =<<
                    arpathToNSPathFn (pToHere L1NSPathStop) p)
               L1.L1NSNamespace { L1.l1nsNamespaceName = L1.L1Identifier _ ident } -> do
-                maybeToList <$> (ensureNoLocalImports
-                          (pToHere (L1NSPathNamespace ident L1NSPathStop)))
+                return [pToHere (L1NSPathNamespace ident L1NSPathStop)]
               L1.L1NSDomain { L1.l1nsDomainName = L1.L1Identifier _ ident } -> do
-                maybeToList <$> (ensureNoLocalImports
-                          (pToHere (L1NSPathDomain ident)))
+                return [pToHere (L1NSPathDomain ident)]
               L1.L1NSAssertion { L1.l1nsExpression = ex } ->
                 getExpressionDependencies pToHere ex
               L1.L1NSNamedValue { L1.l1nsDomainType = Just dt } ->
@@ -770,7 +768,8 @@ tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID (L1.L1NamespaceContent
                                 L1.l1nsInstanceDomainFunctions = dfs,
                                 L1.l1nsInstanceValues = exs } -> do
                 classp <-
-                  ensureNoLocalImports =<< arpathToNSPathFn (pToHere L1NSPathStop) c
+                  maybe (return Nothing) ensureNoLocalImports =<<
+                    arpathToNSPathFn (pToHere L1NSPathStop) c
                 dtsp <- concatMapM (getDomainTypeDependencies pToHere) dts
                 dfsp <- concatMapM (\(_, dts, dex) ->
                             (++) <$> concatMapM (getDomainTypeDependencies pToHere) dts
@@ -1304,7 +1303,39 @@ isolateAssertions f = do
 --   Fails with an error if it finds an import that refers to something that
 --   doesn't exist.
 ensureNoLocalImports :: L1NSPath -> ModelTranslation (Maybe L1NSPath)
-ensureNoLocalImports p = undefined -- TODO
+ensureNoLocalImports p =
+  do
+    l1nsc <- (\(v, _, _) -> v) <$> ask
+    ensureNoLocalImports' l1nsc id p 
+  where
+    ensureNoLocalImports' nsc f (L1NSPathStop) = return . Just $ f L1NSPathStop
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathNamespace ns p) = do
+      case (find (isNamespaceMatching ns) nsc) of
+        Just (L1.L1NSNamespace _ _ nscnext) ->
+          ensureNoLocalImports' nscnext f p
+        _ ->
+          checkRedirect nsc f p ns
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathDomain n) = do
+      undefined -- TODO
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathClass n) = do
+      undefined -- TODO
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathValue n) = do
+      undefined -- TODO
+    isNamespaceMatching name (L1.L1NSNamespace _ (L1.L1Identifier _ name2) _)
+      | name == name2 = True
+    isNamespaceMatching _ _ = False
+    isImportMatching name (L1.L1NSImport _ Nothing _ what hiding _)
+      | Nothing <- what, Nothing <- hiding = True
+      | Just x <- what = any ((==name) . L1.l1IdBS) x
+      | Just x <- hiding = not . any ((==name) . L1.l1IdBS) $ x
+    isImportMatching _ _ = False
+    checkRedirect nsc fToHere pRemain ns = do
+      let imps = filter (isImportMatching ns) nsc
+      flip (flip foldM Nothing) imps $ \st (L1.L1NSImport _ _ p _ _ _) ->
+        (st `mplus`) <$>
+          (maybe (return Nothing)
+                ensureNoLocalImports
+            =<< arpathToNSPathFn (fToHere L1NSPathStop) p)
 
 getDomainDefinitionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1DomainDefinition -> ModelTranslation [L1NSPath]
 getDomainDefinitionDependencies pToHere (L1.L1CloneDomain _ dt) =
@@ -1334,14 +1365,14 @@ getDomainExpressionDependencies pToHere dex = undefined -- TODO
 findNamespaceByRAPath :: L2.L2NamespaceID -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L2.L2NamespaceID)
 findNamespaceByRAPath thisNSID rapath = foldOverNSScopesM undefined undefined thisNSID -- TODO
 
-arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation L1NSPath
+arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L1NSPath)
 arpathToNSPathFn p (L1.L1RelOrAbsPath ss abs rp) = rpathToNSPathFn ss p abs rp
 
-rpathToNSPathFn :: L1.SrcSpan -> L1NSPath -> Bool -> L1.L1RelPath -> ModelTranslation L1NSPath
+rpathToNSPathFn :: L1.SrcSpan -> L1NSPath -> Bool -> L1.L1RelPath -> ModelTranslation (Maybe L1NSPath)
 rpathToNSPathFn ss _ True rpath = -- Absolute path...
   rpathToNSPathFn ss L1NSPathStop False rpath
 
-rpathToNSPathFn ss L1NSPathStop False (L1.L1RelPath rpss []) = return L1NSPathStop
+rpathToNSPathFn ss L1NSPathStop False (L1.L1RelPath rpss []) = return $ Just L1NSPathStop
 rpathToNSPathFn ss L1NSPathStop False (L1.L1RelPath rpss (rphead:rpids)) = do
   ModelTranslationState { mtsL2Model = m } <- get
   undefined -- TODO
