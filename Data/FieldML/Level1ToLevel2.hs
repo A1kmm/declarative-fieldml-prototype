@@ -1048,8 +1048,8 @@ findScopedSymbolByRAPath ss startNS ra tryGet = do
   maybe (fail $ "Symbol " ++ (BSC.unpack . L1.l1IdBS $ symName) ++
                 " not found in namespace at " ++ (show . L1.l1IdSS $ symName)) return r
 
-translateLabel :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1RelOrAbsPathPossiblyIntEnd -> ModelTranslation L2.L2Expression
-translateLabel scope _ nsid done (L1.L1RelOrAbsPathInt pss ra rp v) = do
+translateLabelEx :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1RelOrAbsPathPossiblyIntEnd -> ModelTranslation L2.L2Expression
+translateLabelEx scope _ nsid done (L1.L1RelOrAbsPathInt pss ra rp v) = do
   nsid' <- maybe (fail $ "Cannot find namespace " ++ (show ra) ++ " mentioned at " ++ show pss)
                 return =<< findNamespaceByRAPath nsid (L1.L1RelOrAbsPath pss ra rp)
   when (nsid' /= nsInteger && nsid' /= nsNatural) . fail $
@@ -1060,7 +1060,7 @@ translateLabel scope _ nsid done (L1.L1RelOrAbsPathInt pss ra rp v) = do
     "Attempt to reference a negative natural number, at " ++ (show pss)
   return . L2.L2ExReferenceLabel pss $ L2.L2Label nsid' (fromIntegral v)
 
-translateLabel scope _ nsid done (L1.L1RelOrAbsPathNoInt pss isabs rp) = do
+translateLabelEx scope _ nsid done (L1.L1RelOrAbsPathNoInt pss isabs rp) = do
   let ra = L1.L1RelOrAbsPath pss isabs rp
   findScopedSymbolByRAPath pss nsid ra $ \nsc labelName ->
     case M.lookup (L1.l1IdBS labelName) (L2.l2nsLabels nsc) of
@@ -1072,13 +1072,19 @@ translateLabel scope _ nsid done (L1.L1RelOrAbsPathNoInt pss isabs rp) = do
             Just cv -> Just $ L2.L2ExReferenceClassValue pss cv
             Nothing -> Nothing
 
+translateLabelOnly scope ss nsid done p = do
+  r <- translateLabelEx scope ss nsid done p
+  case r of
+    L2.L2ExReferenceLabel _ l -> return l
+    _ -> fail $ "Expected a label, not a value, at " ++ show ss
+
 translateExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1Expression -> ModelTranslation L2.L2Expression
 translateExpression scope _ nsid done (L1.L1ExApply ss op arg) =
   L2.L2ExApply ss <$> translateExpression scope ss nsid done op
                   <*> translateExpression scope ss nsid done arg
 
 translateExpression scope _ nsid done (L1.L1ExReference ss l) =
-  translateLabel scope ss nsid done l
+  translateLabelEx scope ss nsid done l
 
 translateExpression scope _ _ done (L1.L1ExBoundVariable ss scopedID@(L1.L1ScopedID idss _)) =
   L2.L2ExBoundVariable ss <$>
@@ -1093,50 +1099,22 @@ translateExpression scope _ nsid done (L1.L1ExLiteralReal ss units rv) =
 translateExpression scope _ nsid done (L1.L1ExMkProduct ss values) =
   L2.L2ExMkProduct ss
     <$> mapM (\(l, ex) ->
-               (,) <$> (do
-                           lret <- translateLabel scope ss nsid done l
-                           case lret of
-                             L2.L2ExReferenceLabel _ lab -> return lab
-                             _ -> fail $
-                                  "Label in product must actually be a label, not "
-                                  ++ "a named value, at " ++ (show ss)
-                       )
+               (,) <$> translateLabelOnly scope ss nsid done l
                    <*> translateExpression scope ss nsid done ex
              ) values
 
 translateExpression scope _ nsid done (L1.L1ExMkUnion ss label value) =
   L2.L2ExMkUnion ss
-    <$> (do
-            lret <- translateLabel scope ss nsid done label
-            case lret of
-              L2.L2ExReferenceLabel _ lab -> return lab
-              _ -> fail $
-                   "Label in union must actually be a label, not "
-                   ++ "a named value. at " ++ (show ss)
-        )
+    <$> translateLabelOnly scope ss nsid done label
     <*> translateExpression scope ss nsid done value
 
 translateExpression scope _ nsid done (L1.L1ExProject ss label) =
   L2.L2ExProject ss
-    <$> (do
-            lret <- translateLabel scope ss nsid done label
-            case lret of
-              L2.L2ExReferenceLabel _ lab -> return lab
-              _ -> fail $
-                   "Label in 'project' invocation must actually be a label, not "
-                   ++ "a named value, at " ++ (show ss)
-        )
+    <$> translateLabelOnly scope ss nsid done label
 
 translateExpression scope _ nsid done (L1.L1ExAppend ss label) =
   L2.L2ExAppend ss
-    <$> (do
-            lret <- translateLabel scope ss nsid done label
-            case lret of
-              L2.L2ExReferenceLabel _ lab -> return lab
-              _ -> fail $
-                   "Label in 'append' invocation must actually be a label, not "
-                   ++ "a named value, at " ++ (show ss)
-        )
+    <$> translateLabelOnly scope ss nsid done label
 
 translateExpression scope _ nsid done (L1.L1ExLambda ss bvar value) = do
   newBVar <- L2.l2NextScopedValueID <$> getL2Model
@@ -1152,14 +1130,7 @@ translateExpression scope _ nsid done (L1.L1ExCase ss expr values) =
     <$> translateExpression scope ss nsid done expr
     <*> mapM (\(l, cex) ->
                (,)
-                 <$> (do
-                         lret <- translateLabel scope ss nsid done l
-                         case lret of
-                           L2.L2ExReferenceLabel _ lab -> return lab
-                           _ -> fail $
-                                "Label in 'append' invocation must actually be a label, not "
-                                ++ "a named value, at " ++ (show ss)
-                     )
+                 <$> translateLabelOnly scope ss nsid done l
                  <*> translateExpression scope ss nsid done cex) values
 
 translateExpression scope _ nsid done (L1.L1ExLet ss expr closure) = do
@@ -1231,22 +1202,90 @@ translateDomainExpression scope _ nsid done (L1.L1DomainFunctionEvaluate ss func
 translateDomainExpression scope _ nsid _ (L1.L1DomainVariableRef ss scopedID) =
   return $ L2.L2DomainVariableRef ss (L1.l1ScopedIdBS scopedID)
 
-translateDomainExpression scope _ nsid _ (L1.L1DomainReference _ (rapi@L1.L1RelOrAbsPathInt{})) = fail undefined -- TODO
-translateDomainExpression scope _ nsid _ (L1.L1DomainReference _ (L1.L1RelOrAbsPathNoInt ss ra rp)) = undefined -- TODO
+translateDomainExpression scope _ nsid _ (L1.L1DomainReference ss (rapi@L1.L1RelOrAbsPathInt{})) =
+  fail $ "Attempt to use a label ending in an integer as a domain name, which is invalid, at " ++ (show ss)
+  
+translateDomainExpression scope _ nsid _ (L1.L1DomainReference ss (L1.L1RelOrAbsPathNoInt _ isabs rp)) =
+  -- TODO do something with the constraints rather than throwing them away.
+  L2.l2DomainTypeExpression <$>
+      (findScopedSymbolByRAPath ss nsid (L1.L1RelOrAbsPath ss isabs rp) $
+         \nsc domainName ->
+            M.lookup (L1.l1IdBS domainName) (L2.l2nsDomains nsc))
 
 translateLabelledDomains :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
                             S.Set L1NSPath ->
                             L1.L1LabelledDomains -> ModelTranslation L2.L2LabelledDomains
-translateLabelledDomains = undefined -- TODO
+translateLabelledDomains scope ss nsid done (L1.L1LabelledDomains ls) =
+  L2.L2LabelledDomains
+    <$> mapM (\(l, ex) ->
+                (,) <$> translateLabelOnly scope ss nsid done l
+                    <*> translateDomainExpression scope ss nsid done ex
+             ) ls
 
+makeClonelikeDomain :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
+                       S.Set L1NSPath -> [L1.L1ScopedID] ->
+                       L1.L1DomainType -> L2.L2DomainCloneType ->
+                       ModelTranslation L2.L2DomainType
+makeClonelikeDomain scope ss nsid done params dt ct = do
+  domID <- L2.l2NextDomain <$> getL2Model
+  cldc <- L2.L2ClonelikeDomainContents ss (map L1.l1ScopedIdBS params)
+              <$> translateDomainType scope ss nsid done dt
+              <*> (pure ct)
+  modifyL2Model $ \mod -> mod {
+      L2.l2NextDomain = (\(L2.L2DomainID n) -> L2.L2DomainID (n + 1)) domID,
+      L2.l2AllDomains = M.insert domID cldc (L2.l2AllDomains mod)
+    }
+  return $ L2.L2DomainType ss [] [] [] (L2.L2DomainReference ss domID)
 
 translateDomainDefinition :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
                              S.Set L1NSPath ->
                              [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation L2.L2DomainType
-translateDomainDefinition = undefined -- TODO
+translateDomainDefinition scope _ nsid done params
+  (L1.L1CloneDomain ss dt) =
+    makeClonelikeDomain scope ss nsid done params dt L2.L2DomainClone
+translateDomainDefinition scope _ nsid done params
+  (L1.L1SubsetDomain ss dt ex) =
+    makeClonelikeDomain scope ss nsid done params dt
+      =<< (L2.L2DomainSubset <$> (translateExpression scope ss nsid done ex))
+translateDomainDefinition scope _ nsid done params
+  (L1.L1ConnectDomain ss dt ex) =
+    makeClonelikeDomain scope ss nsid done params dt
+      =<< (L2.L2DomainConnect <$> (translateExpression scope ss nsid done ex))
+translateDomainDefinition scope _ nsid done params
+  (L1.L1DomainDefDomainType ss dt) =
+    translateDomainType scope ss nsid done dt
 
 translateDomainType :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1DomainType -> ModelTranslation L2.L2DomainType
-translateDomainType = undefined -- TODO
+translateDomainType scope _ nsid done (L1.L1DomainType ss dcrs expr) = do
+  (unitConstraints, domainEqualities, domainRelations) <-
+    foldM (\(unitConstraints, domainEqualities, domainRelations) dcr ->
+            case dcr of
+              L1.L1DCRUnitConstraint expr1 expr2 ->
+                (,,)
+                  <$> ((:unitConstraints) <$>
+                       ((,) <$> translateUnitExpression scope ss nsid done expr1
+                            <*> translateUnitExpression scope ss nsid done expr2))
+                  <*> pure domainEqualities
+                  <*> pure domainRelations
+              L1.L1DCREquality expr1 expr2 ->
+                (,,) unitConstraints
+                  <$> ((:domainEqualities) <$>
+                       ((,) <$> translateDomainExpression scope ss nsid done expr1
+                            <*> translateDomainExpression scope ss nsid done expr2))
+                  <*> pure domainRelations
+              L1.L1DCRRelation cls args ->
+                (,,) unitConstraints domainEqualities
+                  <$> ((:domainRelations) <$>
+                       ((,) <$> findScopedSymbolByRAPath ss nsid cls
+                                   (\nsc className -> M.lookup (L1.l1IdBS className)
+                                                          (L2.l2nsClasses nsc))
+                            <*> mapM (translateDomainExpression scope ss nsid done)
+                                     args
+                       )
+                      )
+          ) ([], [], []) dcrs
+  L2.L2DomainType ss unitConstraints domainEqualities domainRelations
+    <$> translateDomainExpression scope ss nsid done expr
 
 -- | Runs a model translation such that any new assertions that are added do not
 --   end up in the global assertion list, but instead becomes part of the result.
