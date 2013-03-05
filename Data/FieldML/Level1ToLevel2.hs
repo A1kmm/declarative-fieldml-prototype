@@ -738,47 +738,11 @@ tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID nsc pToHere (Just (dom
       -- Now do the part that is common to domains and namespaces.
       tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID nsc pToHere Nothing
 
-tryTranslatePartNow' (ssFrom, L1NSPathStop) done thisNSID (L1.L1NamespaceContents nsc) pToHere Nothing = do
+tryTranslatePartNow' (_, L1NSPathStop) done thisNSID (L1.L1NamespaceContents nsc) pToHere Nothing = do
+  -- TODO - sort nsc so that 
   -- Translate a namespace...
   -- Firstly build a list of dependencies...
-  deps <- concatMapM
-          (\nss -> case nss of
-              L1.L1NSImport {
-                L1.l1nsImportFrom = Nothing,
-                L1.l1nsImportPath = p,
-                L1.l1nsImportWhat = what,
-                L1.l1nsImportHiding = hiding,
-                L1.l1nsImportAs = impId } -> do
-                  maybeToList <$> (maybe (return Nothing) ensureNoLocalImports =<<
-                   arpathToNSPathFn (pToHere L1NSPathStop) p)
-              L1.L1NSNamespace { L1.l1nsNamespaceName = L1.L1Identifier _ ident } -> do
-                return [pToHere (L1NSPathNamespace ident L1NSPathStop)]
-              L1.L1NSDomain { L1.l1nsDomainName = L1.L1Identifier _ ident } -> do
-                return [pToHere (L1NSPathDomain ident)]
-              L1.L1NSAssertion { L1.l1nsExpression = ex } ->
-                getExpressionDependencies pToHere ex
-              L1.L1NSNamedValue { L1.l1nsDomainType = Just dt } ->
-                getDomainTypeDependencies pToHere dt
-              L1.L1NSClass { L1.l1nsClassName = n, L1.l1nsClassValues = cv } ->
-                concatMapM (getDomainTypeDependencies pToHere . snd) cv
-              L1.L1NSUnit { L1.l1nsUnitDefinition = ud } ->
-                getUnitDefinitionDependencies pToHere ud
-              L1.L1NSInstance { L1.l1nsInstanceOfClass = c,
-                                L1.l1nsClassArguments = dts,
-                                L1.l1nsInstanceDomainFunctions = dfs,
-                                L1.l1nsInstanceValues = exs } -> do
-                classp <-
-                  maybe (return Nothing) ensureNoLocalImports =<<
-                    arpathToNSPathFn (pToHere L1NSPathStop) c
-                dtsp <- concatMapM (getDomainTypeDependencies pToHere) dts
-                dfsp <- concatMapM (\(_, dts, dex) ->
-                            (++) <$> concatMapM (getDomainTypeDependencies pToHere) dts
-                                 <*> getDomainExpressionDependencies pToHere dex
-                          ) dfs
-                expd <- concatMapM (getExpressionDependencies pToHere) exs
-                return $ (maybeToList classp) ++ dtsp ++ dfsp ++ expd
-              _ -> return []
-          ) nsc
+  deps <- getNamespaceDependencies nsc pToHere
   -- Filter dependencies to remove those that are done...
   let remainingDeps = filter (not . flip S.member done) deps
   case remainingDeps of
@@ -1335,7 +1299,80 @@ ensureNoLocalImports p =
         (st `mplus`) <$>
           (maybe (return Nothing)
                 ensureNoLocalImports
-            =<< arpathToNSPathFn (fToHere L1NSPathStop) p)
+            =<< ((\x -> x pRemain) <$> arpathToNSPathFn (fToHere L1NSPathStop) p))
+
+-- | The variant of getNamespaceDependencies for when we are in the namespace tree
+--   i.e. excluding namespaces which are part of a let closure.
+getNamespaceDependenciesNSTree :: [L1.L1NamespaceStatement] -> (L1NSPath -> L1NSPath) -> ModelTranslation [L1NSPath]
+getNamespaceDependenciesNSTree nsc pToHere =
+  getNamespaceDependencies (\(L1.L1Identifier _ ident) _ -> return [pToHere (L1NSPathNamespace ident L1NSPathStop)])
+                           (\(L1.L1Identifier _ ident) _ -> return [pToHere (L1NSPathDomain ident L1NSPathStop)])
+                           nsc pToHere
+-- | Gets namespace dependencies in a way suitable for a let binding. The
+--   difference is that it is impossible to refer into a let binding, so there can't
+--   be implicit dependencies between them, so we simply concatenate all dependencies
+--   from the group of namespaces.
+getNamespaceDependenciesLet :: [L1.L1NamespaceStatement] -> (L1NSPath -> L1NSPath) -> ModelTranslation [L1NSPath]
+getNamespaceDependenciesLet nsc pToHere =
+  getNamespaceDependencies (\_ (L1.L1NamespaceContents c) -> getNamespaceDependenciesLet c pToHere)
+                           (\_ (L1.L1NamespaceContents c) -> getNamespaceDependenciesLet c pToHere)
+                           nsc pTohere
+
+getNamespaceDependencies ::
+  (L1.L1Identifier -> L1.L1NamespaceContents -> ModelTranslation [L1NSPath]) ->
+  (L1.L1Identifier -> L1.L1NamespaceContents -> ModelTranslation [L1NSPath]) ->
+  [L1.L1NamespaceStatement] -> (L1NSPath -> L1NSPath) -> ModelTranslation [L1NSPath]
+getNamespaceDependencies fNamespace fDomain nsc pToHere =
+  deps <- concatMapM
+          (\nss -> case nss of
+              L1.L1NSImport {
+                L1.l1nsImportFrom = Nothing,
+                L1.l1nsImportPath = p,
+                L1.l1nsImportWhat = what,
+                L1.l1nsImportHiding = hiding,
+                L1.l1nsImportAs = impId } -> do
+                  maybeToList <$>
+                    (maybe (return Nothing) ensureNoLocalImports =<<
+                     ((\x -> x L1NSPathStop) <$> arpathToNSPathFn (pToHere L1NSPathStop) p))
+              L1.L1NSNamespace { L1.l1nsNamespaceName = ident, L1.l1nsNamespaceContents = c } -> fNamespace ident c
+              L1.L1NSDomain { L1.l1nsDomainName = ident, L1.l1nsDomainDefinition = dd, L1.l1nsNamespaceContents = c } ->
+                (++) <$> getDomainDefinitionDependencies pToHere dd
+                     <*> fDomain ident c
+              L1.L1NSAssertion { L1.l1nsExpression = ex } ->
+                -- Note: We take a slight shortcut here that we should fix later:
+                -- when processing let (where) bindings, we don't do anything special to
+                -- exclude the symbols. The only time this can cause a problem is
+                -- when it gives a false positive on the cycle detector, so it isn't
+                -- a major problem. e.g.
+                --  let == x (x where
+                --                val x
+                --                let == x R::10)
+                -- is a perfectly valid expression equivalent to let == x R::10, but
+                -- the dependency finding code will resolve the x before 'where' to
+                -- the top-level x.
+                getExpressionDependencies pToHere ex
+              L1.L1NSNamedValue { L1.l1nsDomainType = Just dt } ->
+                getDomainTypeDependencies pToHere dt
+              L1.L1NSClass { L1.l1nsClassName = n, L1.l1nsClassValues = cv } ->
+                concatMapM (getDomainTypeDependencies pToHere . snd) cv
+              L1.L1NSUnit { L1.l1nsUnitDefinition = ud } ->
+                getUnitDefinitionDependencies pToHere ud
+              L1.L1NSInstance { L1.l1nsInstanceOfClass = c,
+                                L1.l1nsClassArguments = dts,
+                                L1.l1nsInstanceDomainFunctions = dfs,
+                                L1.l1nsInstanceValues = exs } -> do
+                classp <-
+                  maybe (return Nothing) ensureNoLocalImports =<<
+                    ((\x -> x L1NSPathStop) <$> arpathToNSPathFn (pToHere L1NSPathStop) c)
+                dtsp <- concatMapM (getDomainTypeDependencies pToHere) dts
+                dfsp <- concatMapM (\(_, dts, dex) ->
+                            (++) <$> concatMapM (getDomainTypeDependencies pToHere) dts
+                                 <*> getDomainExpressionDependencies pToHere dex
+                          ) dfs
+                expd <- concatMapM (getExpressionDependencies pToHere) exs
+                return $ (maybeToList classp) ++ dtsp ++ dfsp ++ expd
+              _ -> return []
+          ) nsc
 
 getDomainDefinitionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1DomainDefinition -> ModelTranslation [L1NSPath]
 getDomainDefinitionDependencies pToHere (L1.L1CloneDomain _ dt) =
@@ -1350,7 +1387,44 @@ getDomainDefinitionDependencies pToHere (L1.L1DomainDefDomainType _ dt) =
   getDomainTypeDependencies pToHere dt
 
 getExpressionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1Expression -> ModelTranslation [L1NSPath]
-getExpressionDependencies pToHere ex = undefined -- TODO
+getExpressionDependencies pToHere (L1.L1ExApply _ op arg) =
+  (++) <$> getExpressionDependencies pToHere op
+       <*> getExpressionDependencies pToHere arg
+getExpressionDependencies pToHere (L1.L1ExReference _ ident) =
+  getLabelDependencies pToHere ident
+getExpressionDependencies pToHere (L1.L1ExBoundVariable _ _) = return []
+getExpressionDependencies pToHere (L1.L1ExLiteralReal _ units _) =
+  getUnitExpressionDependencies pToHere units
+getExpressionDependencies pToHere (L1.L1ExMkProduct _ vals) =
+  concat <$> mapM (\(label, ex) -> (++)
+                                     <$> getLabelDependencies pToHere label
+                                     <*> getExpressionDependencies pToHere ex
+                  ) vals
+getExpressionDependencies pToHere (L1.L1ExMkUnion _ lab val) =
+  (++) <$> getLabelDependencies pToHere lab
+       <*> getExpressionDependencies pToHere val
+getExpressionDependencies pToHere (L1.L1ExProject _ lab) =
+  getLabelDependencies pToHere lab
+getExpressionDependencies pToHere (L1.L1ExAppend _ lab) =
+  getLabelDependencies pToHere lab
+getExpressionDependencies pToHere (L1.L1ExLambda _ _ val) =
+  getExpressionDependencies pToHere val
+getExpressionDependencies pToHere (L1.L1ExCase _ _ vals) =
+  concat <$> mapM (\(label, ex) -> (++)
+                                     <$> getLabelDependencies pToHere label
+                                     <*> getExpressionDependencies pToHere ex
+                  ) vals
+getExpressionDependencies pToHere (L1.L1ExLet _ ex closure) =
+  getNamespaceDependenciesLet pToHere closure
+getExpressionDependencies pToHere (L1.L1ExString _ _ _) = return []
+getExpressionDependencies pToHere (L1.L1ExSignature _ ex dt) =
+  undefined -- TODO
+
+getLabelDependencies :: (L1NSPath -> L1NSPath) -> ModelTranslation [L1.L1RelOrAbsPathPossiblyIntEnd]
+getLabelDependencies pToHere ident =
+  maybeToList <$>
+    maybe (return Nothing) ensureNoLocalImports =<<
+          ((\x -> x L1NSPathStop) <$> rapiePathToValuePath (pToHere L1NSPathStop) ident)
 
 getDomainTypeDependencies :: (L1NSPath -> L1NSPath) -> L1.L1DomainType -> ModelTranslation [L1NSPath]
 getDomainTypeDependencies pToHere dt = undefined -- TODO
@@ -1365,10 +1439,10 @@ getDomainExpressionDependencies pToHere dex = undefined -- TODO
 findNamespaceByRAPath :: L2.L2NamespaceID -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L2.L2NamespaceID)
 findNamespaceByRAPath thisNSID rapath = foldOverNSScopesM undefined undefined thisNSID -- TODO
 
-arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L1NSPath)
+arpathToNSPathFn :: L1NSPath -> L1.L1RelOrAbsPath -> ModelTranslation (L1NSPath -> Maybe L1NSPath)
 arpathToNSPathFn p (L1.L1RelOrAbsPath ss abs rp) = rpathToNSPathFn ss p abs rp
 
-rpathToNSPathFn :: L1.SrcSpan -> L1NSPath -> Bool -> L1.L1RelPath -> ModelTranslation (Maybe L1NSPath)
+rpathToNSPathFn :: L1.SrcSpan -> L1NSPath -> Bool -> L1.L1RelPath -> ModelTranslation (L1NSPath -> Maybe L1NSPath)
 rpathToNSPathFn ss _ True rpath = -- Absolute path...
   rpathToNSPathFn ss L1NSPathStop False rpath
 
@@ -1376,3 +1450,8 @@ rpathToNSPathFn ss L1NSPathStop False (L1.L1RelPath rpss []) = return $ Just L1N
 rpathToNSPathFn ss L1NSPathStop False (L1.L1RelPath rpss (rphead:rpids)) = do
   ModelTranslationState { mtsL2Model = m } <- get
   undefined -- TODO
+
+-- | Attempts to tansform a relative/absolute possibly integer end path into a
+--   L1NSPath pointing at the 
+rapiePathToValuePath :: L1NSPath -> L1.L1RelOrAbsPathPossiblyIntEnd -> ModelTranslation (Maybe L1NSPath)
+rapiePathToValuePath nspath rapie = undefined -- TODO
