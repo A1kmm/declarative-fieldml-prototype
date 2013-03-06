@@ -26,6 +26,15 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Set as S
 import qualified Data.Traversable as T
 
+-- | Loads an L2 model, and all dependencies, or returns an error.
+loadL2ModelFromURL :: [String] -> String -> ErrorT String IO (L2.L2Model)
+loadL2ModelFromURL incl mpath =
+  runLookupModel (loadL2ModelFromURL' incl mpath)
+
+-- | The monad in which the overall model load occurs; it stores a
+--   a list of model URLs already loaded (with their cached L2 models)
+--   and allows for model loading errors to occur. It also allows
+--   lifted IO monad expressions.
 data LookupModel a = LookupModel { unlookupModel :: StateT (M.Map BS.ByteString L2.L2Model) (ErrorT String IO) a }
 
 instance Monad LookupModel where
@@ -44,19 +53,13 @@ instance MonadState LookupModel where
   get = LookupModel get
   put = LookupModel . put
 
+-- | Runs a LookupModel in the ErrorT String IO monad.
 runLookupModel :: LookupModel a -> ErrorT String IO a
 runLookupModel x = evalStateT (unlookupModel x) M.empty
 
-loadL2ModelFromURL :: [String] -> String -> ErrorT String IO (L2.L2Model)
-loadL2ModelFromURL incl mpath =
-  runLookupModel (loadL2ModelFromURL' incl mpath)
-
-firstJustM :: Monad m => [m (Maybe a)] -> m (Maybe a)
-firstJustM (mh:t) = do
-  h <- mh
-  maybe (firstJustM t) (return . Just) h
-firstJustM [] = return Nothing
-
+-- | Tries to load a particular model from the cache or by loading it from
+--   the filesystem (looking in the specified paths) and parsing it. The
+--   parse may recursively load further models.
 loadL2ModelFromURL' :: [String] -> String -> LookupModel L2.L2Model
 loadL2ModelFromURL' incl mpath = do
   -- Try to find the model first...
@@ -78,6 +81,7 @@ loadL2ModelFromURL' incl mpath = do
             else
               return Nothing)
 
+-- | Attempts to load all imports mentioned in a L1 model.
 tryResolveAllImports :: [String] -> L1.L1NamespaceContents -> LookupModel (M.Map BS.ByteString L2.L2Model)
 tryResolveAllImports incl nsc = do
   forM_ (nub . sort $ [v | L1.L1NSImport { L1.l1nsImportFrom = Just v} <- universeBi nsc]) $ \toImport -> do
@@ -85,9 +89,20 @@ tryResolveAllImports incl nsc = do
     modify $ M.insert toImport lm
   get
 
-data L1NSPath = L1NSPathStop | L1NSPathNamespace BS.ByteString L1NSPath | L1NSPathDomain BS.ByteString |
-                L1NSPathClass BS.ByteString | L1NSPathValue BS.ByteString
-                deriving (Eq, Ord, Show, Data, Typeable)
+-- | Attempts to translate a parsed L1 model into L2. This function depends
+--   on all imports being loaded already.
+translateL1ToL2 :: String -> L1.L1NamespaceContents -> M.Map BS.ByteString L2.L2Model -> ErrorT String IO L2.L2Model
+translateL1ToL2 mpath l1ns impmap =
+  flip runReaderT (handleL1SimpleSyntacticSugar (BSC.pack mpath) l1ns, mpath, impmap) $
+    flip evalStateT (def :: ModelTranslationState) $ do
+      -- Create a tree of namespaces; this excludes namespaces that appear
+      -- under let bindings, which get dealt with later as we process expressions.
+      recursivelyCreateNamespaces (L1.SrcSpan mpath 0 0 0 0) l1ns [] nsBuiltinMain
+      -- Change the tree into a DAG by processing imports.
+      processNamespaceImports S.empty [] nsMain
+      -- Process everything else now we have our starting names.
+      recursivelyTranslateModel nsMain S.empty S.empty [(biSrcSpan, L1NSPathStop)]
+      getL2Model
 
 -- | Some L1 constructs can be translated to an equivalent canonical L1 that
 --   doesn't use certain features. This function is run to simplify the L1
@@ -114,23 +129,17 @@ handleL1SimpleSyntacticSugar self =
       | impfrom == self = imp { L1.l1nsImportFrom = Nothing }
     g x = x
 
-translateL1ToL2 :: String -> L1.L1NamespaceContents -> M.Map BS.ByteString L2.L2Model -> ErrorT String IO L2.L2Model
-translateL1ToL2 mpath l1ns impmap =
-  flip runReaderT (handleL1SimpleSyntacticSugar (BSC.pack mpath) l1ns, mpath, impmap) $
-    flip evalStateT (def :: ModelTranslationState) $ do
-      -- Create a tree of namespaces; this excludes namespaces that appear
-      -- under let bindings, which get dealt with later as we process expressions.
-      recursivelyCreateNamespaces (L1.SrcSpan mpath 0 0 0 0) l1ns [] nsBuiltinMain
-      -- Change the tree into a DAG by processing imports.
-      processNamespaceImports S.empty [] nsMain
-      -- Process everything else now we have our starting names.
-      recursivelyTranslateModel nsMain S.empty S.empty [(biSrcSpan, L1NSPathStop)]
-      getL2Model
-
-type ForeignToLocal a = M.Map (L2.Identifier, a) a
-
+-- | The ModelTranslation monad carries all state and reader information needed to
+--   translate a L1 model into a L2 model.
+type ModelTranslation a = StateT ModelTranslationState
+                          (ReaderT (L1.L1NamespaceContents, String, M.Map BS.ByteString L2.L2Model)
+                                  (ErrorT String IO)) a
+-- | ModelTranslationState carries all information needed to describe the current state
+--   of the model translation from L1 -> L2 in progress.
 data ModelTranslationState = ModelTranslationState {
-    mtsL2Model :: L2.L2Model,
+    mtsL2Model :: L2.L2Model,                                      -- ^ The L2 model, so far.
+    -- | Maps L2 namespace IDs to L1 contents.
+    -- Note: This may be unnecessary in the two pass system.
     mtsL2ToL1Map :: M.Map L2.L2NamespaceID L1.L1NamespaceContents,
     mtsForeignToLocalNS :: ForeignToLocal L2.L2NamespaceID,
     mtsForeignToLocalDomains ::
@@ -166,18 +175,25 @@ instance Default ModelTranslationState where
     mtsForeignToLocalClassValue = M.empty
                               }
 
+-- | The type of a map from a foreign URL (model identifier) and ID to a local
+--   identifier. Used to keep track of whether a foreign symbol has already
+--   been imported.
+type ForeignToLocal a = M.Map (L2.Identifier, a) a
+
+-- | Scope information is carried down expression trees, but not across to
+--   different branches (unlike the other state).
 data ScopeInformation = ScopeInformation {
   siValueIDMap  :: M.Map L1.L1ScopedID L2.L2ScopedValueID,
   siUnitIDMap   :: M.Map L1.L1ScopedID L2.L2ScopedUnitID
   }
-
 instance Default ScopeInformation where
   def = ScopeInformation M.empty M.empty
 
-type ModelTranslation a = StateT ModelTranslationState
-                          (ReaderT (L1.L1NamespaceContents, String, M.Map BS.ByteString L2.L2Model)
-                                  (ErrorT String IO)) a
-  
+-- TODO - get rid of L1NSPath?
+data L1NSPath = L1NSPathStop | L1NSPathNamespace BS.ByteString L1NSPath | L1NSPathDomain BS.ByteString |
+                L1NSPathClass BS.ByteString | L1NSPathValue BS.ByteString
+                deriving (Eq, Ord, Show, Data, Typeable)
+
 recursivelyCreateNamespaces ss nsc@(L1.L1NamespaceContents c) canonPath parentNS = do
   myNSID <- registerNewNamespace ss parentNS nsc
   -- If we are not at the nsMain level, our parent should link to us by name...
@@ -192,51 +208,6 @@ recursivelyCreateNamespaces ss nsc@(L1.L1NamespaceContents c) canonPath parentNS
                       L1.l1nsNamespaceContents = newnsc } ->
         recursivelyCreateNamespaces nsss newnsc (nsname:canonPath) myNSID
       _ -> return ()
-
-getL2Model :: ModelTranslation L2.L2Model
-getL2Model = mtsL2Model <$> get
-
-modifyL2Model :: (L2.L2Model -> L2.L2Model) -> ModelTranslation ()
-modifyL2Model f = modify $ \mts -> mts { mtsL2Model = f (mtsL2Model mts) }
-
-registerNewNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
-registerNewNamespace ss parent nsc = do
-  nsID <- L2.l2NextNamespace <$> getL2Model
-  modify $ \mts ->
-    (
-      mts { mtsL2Model = (mtsL2Model mts) {
-                 L2.l2AllNamespaces = M.insert nsID (blankNamespaceContents ss parent) (L2.l2AllNamespaces (mtsL2Model mts)),
-                 L2.l2NextNamespace = (\(L2.L2NamespaceID v) -> L2.L2NamespaceID (v + 1))
-                                      (L2.l2NextNamespace (mtsL2Model mts))
-               },
-            mtsL2ToL1Map = M.insert nsID nsc (mtsL2ToL1Map mts)
-          }
-    )
-  return nsID
-
-modifyNamespaceContents :: L2.L2NamespaceID -> (L2.L2NamespaceContents -> L2.L2NamespaceContents) -> ModelTranslation ()
-modifyNamespaceContents ns f =
-  modifyL2Model $ \mod ->
-    mod {
-      L2.l2AllNamespaces = M.update (Just . f) ns (L2.l2AllNamespaces mod)
-      }
-
-getNamespaceContents :: L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceContents
-getNamespaceContents nsid = (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
-
-findNamespace :: L2.L2NamespaceID -> BS.ByteString -> ModelTranslation (Maybe L2.L2NamespaceID)
-findNamespace parentNS nsName = do
-  m <- mtsL2Model <$> get
-  let Just pns = M.lookup parentNS (L2.l2AllNamespaces m)
-  return $ M.lookup nsName (L2.l2nsNamespaces pns)
-
-findOrCreateNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> BS.ByteString -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
-findOrCreateNamespace ss parentNS nsName nsc = do
-  m <- mtsL2Model <$> get
-  let Just pns = M.lookup parentNS (L2.l2AllNamespaces m)
-  case M.lookup nsName (L2.l2nsNamespaces pns) of
-    Nothing -> registerNewNamespace ss parentNS nsc
-    Just nsid -> return nsid
 
 -- | Recursively imports symbols into namespaces. Done keeps track of which namespaces have already
 --   been processed. Stack keeps track of what namespaces we are working on now, for cycle detection.
@@ -600,59 +571,6 @@ recursivelyImportExternalDomainFunction =
        }
      return newDFID
 
--- | Takes an optional list of what to import to import, an optional list of what to hide, and a target namespace and model,
---   and builds a list of symbols to import. Fails with an error if there is a symbol in the what or hiding list which
---   doesn't actually exist.
-importListFromWhatAndHiding ::
-  Monad m => L2.L2NamespaceID -> L2.L2Model -> Maybe [L1.L1Identifier] -> Maybe [L1.L1Identifier] -> m [L1.L1Identifier]
-importListFromWhatAndHiding nsID m what hiding = do
-  let impList = allSymbolNames nsID m
-      impSet = S.fromList impList
-      whatSet = S.fromList (fromMaybe [] what)
-      hidingSet = S.fromList (fromMaybe [] hiding)
-      missingSyms = (whatSet `S.union` hidingSet) `S.difference` impSet
-  when (not (S.null missingSyms)) . fail $
-    "Import statement mentions the following symbols which don't exist: " ++
-    (intercalate ", " $
-     map (\(L1.L1Identifier ss n) ->
-           (BSC.unpack n) ++ " at " ++ (show ss)) $ S.toList missingSyms)
-  let finalSet = case (what, hiding) of
-        (Nothing, Nothing) -> impSet
-        (Just _, Nothing) -> whatSet
-        (Nothing, Just _) -> impSet `S.difference` hidingSet
-        (Just _, Just _) -> whatSet `S.difference` hidingSet
-  return . S.toList $ finalSet
-
--- | Finds all symbols in a particular namespace, of all types.
-allSymbolNames :: L2.L2NamespaceID -> L2.L2Model -> [L1.L1Identifier]
-allSymbolNames nsID m =
-  let
-    Just nsc = M.lookup nsID (L2.l2AllNamespaces m)
-  in
-   map (L1.L1Identifier (L2.l2nsSrcSpan nsc)) $
-     concatMap (\f -> f nsc)
-       [M.keys . L2.l2nsNamespaces,
-        M.keys . L2.l2nsDomains,
-        M.keys . L2.l2nsNamedValues,
-        M.keys . L2.l2nsClassValues,
-        M.keys . L2.l2nsUnits,
-        M.keys . L2.l2nsClasses,
-        M.keys . L2.l2nsDomainFunctions,
-        M.keys . L2.l2nsLabels
-       ]
-
--- | Finds a namespace in a Level 2 model, treating a particular namespace as root and applying a level 1 namespace path. Fails with an error if the
---   namespace cannot be found. Does not look up the tree from the starting namespace for other matches if it is not found at the root.
-findNamespaceInL2UsingL1Path :: Monad m => L2.L2NamespaceID -> L2.L2Model -> L1.L1RelPath -> m L2.L2NamespaceID
-findNamespaceInL2UsingL1Path ns0 _ (L1.L1RelPath _ []) = return ns0
-findNamespaceInL2UsingL1Path ns0 l2mod (L1.L1RelPath _ ((L1.L1Identifier ss l1id):l1ids)) = do
-  let Just nsc0 = M.lookup ns0 (L2.l2AllNamespaces l2mod)
-  case M.lookup l1id (L2.l2nsNamespaces nsc0) of
-    Nothing ->
-      fail $ "Attempt to import namespace " ++ (BSC.unpack l1id) ++ " which doesn't exist, at " ++ show ss
-    Just ns1 ->
-      findNamespaceInL2UsingL1Path ns1 l2mod (L1.L1RelPath ss l1ids)
-
 -- | Describes how to add to an existing L2Model by translating a list of parts
 -- referred to by L1NSPath (in queue - along with the SrcSpan that triggered the
 -- need to translate). deferred contains a set of paths that depend on
@@ -828,7 +746,7 @@ translateNSContents scope thisNSID done nsc = do
         L1.l1nsDomainName = L1.L1Identifier idss ident,
         L1.l1nsDomainParameters = params,
         L1.l1nsDomainDefinition = dd } -> do
-        Just domNSID <- findNamespace thisNSID ident
+        Just domNSID <- findExactNamespace thisNSID ident
         domStatement <- translateDomainDefinition scope ss domNSID done params dd
         -- TODO - check for name conflicts
         return $ l2nsc {
@@ -958,26 +876,7 @@ translateNSContents scope thisNSID done nsc = do
                        (L2.l2AllInstances mod) }
         return l2nsc
   
-trySplitRAPathOnLast :: L1.L1RelOrAbsPath -> Maybe (L1.L1RelOrAbsPath, L1.L1Identifier)
-trySplitRAPathOnLast (L1.L1RelOrAbsPath ss ra p) =
-   maybe Nothing (\(x, y) -> Just (L1.L1RelOrAbsPath ss ra x, y))
-         (trySplitRPathOnLast p)
-
-trySplitRPathOnLast (L1.L1RelPath rpss []) = Nothing
-trySplitRPathOnLast (L1.L1RelPath rpss l) = Just (L1.L1RelPath rpss (init l), last l)
-
-mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
-mapMaybeM f l = catMaybes `liftM` sequence (map f l)
-
-concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
-concatMapM f l = concat `liftM` sequence (map f l)
-
-allocDomainID :: ModelTranslation L2.L2DomainID
-allocDomainID = do
-  newID <- L2.l2NextDomain <$> getL2Model
-  modifyL2Model $ \mod -> mod { L2.l2NextDomain = (\(L2.L2DomainID n) -> L2.L2DomainID (n + 1)) newID }
-  return newID
-
+-- Todo: rewrite for two-pass.
 tryTranslateDomainDefinition :: L1.SrcSpan -> S.Set L1NSPath -> L2.L2NamespaceID -> (L1NSPath -> L1NSPath)
                                 -> [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation (Either [L1NSPath] L2.L2DomainType)
 tryTranslateDomainDefinition ssFrom done nsid pToHere domainVars dd = do
@@ -987,30 +886,7 @@ tryTranslateDomainDefinition ssFrom done nsid pToHere domainVars dd = do
     then Right <$> translateDomainDefinition def ssFrom nsid done [] dd
     else return . Left $ missing
 
-foldOverNSScopesM :: (s -> L2.L2NamespaceID -> ModelTranslation s) -> s -> L2.L2NamespaceID -> ModelTranslation s
-foldOverNSScopesM f s0 nsid = do
-  s1 <- f s0 nsid
-  nsc <- (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
-  foldOverNSScopesM f s1 (L2.l2nsParent nsc)
-
-findScopedSymbolByRAPath :: L1.SrcSpan -> L2.L2NamespaceID -> L1.L1RelOrAbsPath ->
-                            (L2.L2NamespaceContents -> L1.L1Identifier -> Maybe a) -> ModelTranslation a
-findScopedSymbolByRAPath ss startNS ra tryGet = do
-  (nsra@(L1.L1RelOrAbsPath _ isabs rp), symName) <- maybe (fail $ "Inappropriate use of an empty path, at " ++ show ss)
-                             return $ trySplitRAPathOnLast ra
-  -- Recursively find the namespace...
-  nsid <- maybe (fail $ "Cannot find namespace " ++ show nsra ++ " mentioned at " ++ show ss) return =<<
-          findNamespaceByRAPath startNS nsra
-  let foldStrategy =
-        if (not isabs && null (L1.l1RelPathIDs rp))
-           then flip (flip foldOverNSScopesM Nothing) nsid
-           else (\x -> x Nothing nsid)
-  r <- foldStrategy $ \s nsid' -> (mplus s) <$> do
-    nsc <- (fromJust . M.lookup nsid' . L2.l2AllNamespaces) <$> getL2Model
-    return $ tryGet nsc symName
-  maybe (fail $ "Symbol " ++ (BSC.unpack . L1.l1IdBS $ symName) ++
-                " not found in namespace at " ++ (show . L1.l1IdSS $ symName)) return r
-
+-- | Translates an L1Label to an L2Expression.
 translateLabelEx :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1RelOrAbsPathPossiblyIntEnd -> ModelTranslation L2.L2Expression
 translateLabelEx scope _ nsid done (L1.L1RelOrAbsPathInt pss ra rp v) = do
   nsid' <- maybe (fail $ "Cannot find namespace " ++ (show ra) ++ " mentioned at " ++ show pss)
@@ -1035,12 +911,15 @@ translateLabelEx scope _ nsid done (L1.L1RelOrAbsPathNoInt pss isabs rp) = do
             Just cv -> Just $ L2.L2ExReferenceClassValue pss cv
             Nothing -> Nothing
 
+-- | Translates an L1Label to an L2Label, giving an appropriate error if the
+--   label is something other than an ensemble label.
 translateLabelOnly scope ss nsid done p = do
   r <- translateLabelEx scope ss nsid done p
   case r of
     L2.L2ExReferenceLabel _ l -> return l
     _ -> fail $ "Expected a label, not a value, at " ++ show ss
 
+-- | Translates an L1Expression to a L2Expression.
 translateExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1Expression -> ModelTranslation L2.L2Expression
 translateExpression scope _ nsid done (L1.L1ExApply ss op arg) =
   L2.L2ExApply ss <$> translateExpression scope ss nsid done op
@@ -1113,6 +992,7 @@ translateExpression scope _ nsid done (L1.L1ExSignature ss ex sig) = do
   L2.L2ExSignature ss <$> (translateExpression scope ss nsid done ex)
                       <*> (translateDomainType scope ss nsid done sig)
 
+-- | Translates an L1UnitExpression to a L2UnitExpression.
 translateUnitExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1UnitExpression -> ModelTranslation L2.L2UnitExpression
 translateUnitExpression scope _ nsid _ (L1.L1UnitExDimensionless ss) =
   pure $ L2.L2UnitExDimensionless ss
@@ -1130,6 +1010,7 @@ translateUnitExpression scope _ nsid done (L1.L1UnitScopedVar ss scopedv) =
   L2.L2UnitScopedVar ss <$>
     maybe (fail $ "Reference to unknown scoped units name " ++ (BSC.unpack . L1.l1ScopedIdBS $ scopedv) ++ " at " ++ (show ss)) return (M.lookup scopedv (siUnitIDMap scope))
 
+-- | Translates an L1UnitDefinition to an L2UnitDefinition
 translateUnitDefinition :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1UnitDefinition -> ModelTranslation L2.L2UnitExpression
 translateUnitDefinition scope _ nsid _ (L1.L1UnitDefNewBase ss) = do
   buID <- L2.l2NextBaseUnits <$> getL2Model
@@ -1140,6 +1021,7 @@ translateUnitDefinition scope _ nsid _ (L1.L1UnitDefNewBase ss) = do
 translateUnitDefinition scope _ nsid done (L1.L1UnitDefUnitExpr ss expr) =
   translateUnitExpression scope ss nsid done expr
 
+-- | Translates an L1DomainExpression to an L2DomainExpression
 translateDomainExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1DomainExpression -> ModelTranslation L2.L2DomainExpression
 translateDomainExpression scope _ nsid done (L1.L1DomainExpressionProduct ss labels) =
   L2.L2DomainExpressionProduct ss <$>  translateLabelledDomains scope ss nsid done labels
@@ -1175,6 +1057,7 @@ translateDomainExpression scope _ nsid _ (L1.L1DomainReference ss (L1.L1RelOrAbs
          \nsc domainName ->
             M.lookup (L1.l1IdBS domainName) (L2.l2nsDomains nsc))
 
+-- | Translates an L1LabeleldDomains into an L2LabelledDomains.
 translateLabelledDomains :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
                             S.Set L1NSPath ->
                             L1.L1LabelledDomains -> ModelTranslation L2.L2LabelledDomains
@@ -1185,6 +1068,7 @@ translateLabelledDomains scope ss nsid done (L1.L1LabelledDomains ls) =
                     <*> translateDomainExpression scope ss nsid done ex
              ) ls
 
+-- | Produces a L2DomainType linking to a new L2ClonelikeDomainContents.
 makeClonelikeDomain :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
                        S.Set L1NSPath -> [L1.L1ScopedID] ->
                        L1.L1DomainType -> L2.L2DomainCloneType ->
@@ -1200,6 +1084,8 @@ makeClonelikeDomain scope ss nsid done params dt ct = do
     }
   return $ L2.L2DomainType ss [] [] [] (L2.L2DomainReference ss domID)
 
+-- | Translates an L1DomainDefinition to an L2DomainType, registering new domains
+--   as required for the definition.
 translateDomainDefinition :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
                              S.Set L1NSPath ->
                              [L1.L1ScopedID] -> L1.L1DomainDefinition -> ModelTranslation L2.L2DomainType
@@ -1218,6 +1104,7 @@ translateDomainDefinition scope _ nsid done params
   (L1.L1DomainDefDomainType ss dt) =
     translateDomainType scope ss nsid done dt
 
+-- | Translates an L1DomainType to an L2DomainType.
 translateDomainType :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> S.Set L1NSPath -> L1.L1DomainType -> ModelTranslation L2.L2DomainType
 translateDomainType scope _ nsid done (L1.L1DomainType ss dcrs expr) = do
   (unitConstraints, domainEqualities, domainRelations) <-
@@ -1250,57 +1137,8 @@ translateDomainType scope _ nsid done (L1.L1DomainType ss dcrs expr) = do
   L2.L2DomainType ss unitConstraints domainEqualities domainRelations
     <$> translateDomainExpression scope ss nsid done expr
 
--- | Runs a model translation such that any new assertions that are added do not
---   end up in the global assertion list, but instead becomes part of the result.
-isolateAssertions :: ModelTranslation a -> ModelTranslation (a, [L2.L2Expression])
-isolateAssertions f = do
-  origAssertions <- L2.l2AllAssertions <$> getL2Model
-  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = [] }
-  r <- f
-  newAssertions <- L2.l2AllAssertions <$> getL2Model
-  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = origAssertions }
-  return (r, newAssertions)
-
--- | Recursively change a path to the equivalent path that does not reference
---   any local imports. Produces Nothing if a symbol eventually refers to a
---   non-local import; leaves symbols which don't have any imports unchanged.
---   Fails with an error if it finds an import that refers to something that
---   doesn't exist.
-ensureNoLocalImports :: L1NSPath -> ModelTranslation (Maybe L1NSPath)
-ensureNoLocalImports p =
-  do
-    l1nsc <- (\(v, _, _) -> v) <$> ask
-    ensureNoLocalImports' l1nsc id p 
-  where
-    ensureNoLocalImports' nsc f (L1NSPathStop) = return . Just $ f L1NSPathStop
-    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathNamespace ns p) = do
-      case (find (isNamespaceMatching ns) nsc) of
-        Just (L1.L1NSNamespace _ _ nscnext) ->
-          ensureNoLocalImports' nscnext f p
-        _ ->
-          checkRedirect nsc f p ns
-    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathDomain n) = do
-      undefined -- TODO
-    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathClass n) = do
-      undefined -- TODO
-    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathValue n) = do
-      undefined -- TODO
-    isNamespaceMatching name (L1.L1NSNamespace _ (L1.L1Identifier _ name2) _)
-      | name == name2 = True
-    isNamespaceMatching _ _ = False
-    isImportMatching name (L1.L1NSImport _ Nothing _ what hiding _)
-      | Nothing <- what, Nothing <- hiding = True
-      | Just x <- what = any ((==name) . L1.l1IdBS) x
-      | Just x <- hiding = not . any ((==name) . L1.l1IdBS) $ x
-    isImportMatching _ _ = False
-    checkRedirect nsc fToHere pRemain ns = do
-      let imps = filter (isImportMatching ns) nsc
-      flip (flip foldM Nothing) imps $ \st (L1.L1NSImport _ _ p _ _ _) ->
-        (st `mplus`) <$>
-          (maybe (return Nothing)
-                ensureNoLocalImports
-            =<< ((\x -> x pRemain) <$> arpathToNSPathFn (fToHere L1NSPathStop) p))
-
+-- getNamespaceDependencies* will get replaced when I switch from a dependency
+-- tracer to multipass.
 -- | The variant of getNamespaceDependencies for when we are in the namespace tree
 --   i.e. excluding namespaces which are part of a let closure.
 getNamespaceDependenciesNSTree :: [L1.L1NamespaceStatement] -> (L1NSPath -> L1NSPath) -> ModelTranslation [L1NSPath]
@@ -1434,6 +1272,227 @@ getUnitDefinitionDependencies pToHere ud = undefined -- TODO
 
 getDomainExpressionDependencies :: (L1NSPath -> L1NSPath) -> L1.L1DomainExpression -> ModelTranslation [L1NSPath]
 getDomainExpressionDependencies pToHere dex = undefined -- TODO
+
+-- Utility functions for working with L2 models...
+-- | Fetch the current L2 model out of the state.
+getL2Model :: ModelTranslation L2.L2Model
+getL2Model = mtsL2Model <$> get
+
+-- | Modify the L2 model in the state.
+modifyL2Model :: (L2.L2Model -> L2.L2Model) -> ModelTranslation ()
+modifyL2Model f = modify $ \mts -> mts { mtsL2Model = f (mtsL2Model mts) }
+
+-- | Fetch the contents of a namespace using the namespace ID.
+getNamespaceContents :: L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceContents
+getNamespaceContents nsid = (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+
+-- | Modify the contents of a namespace using namespace ID.
+modifyNamespaceContents :: L2.L2NamespaceID -> (L2.L2NamespaceContents -> L2.L2NamespaceContents) -> ModelTranslation ()
+modifyNamespaceContents ns f =
+  modifyL2Model $ \mod ->
+    mod {
+      L2.l2AllNamespaces = M.update (Just . f) ns (L2.l2AllNamespaces mod)
+      }
+
+-- | Unconditionally register a new namespace.
+registerNewNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
+registerNewNamespace ss parent nsc = do
+  nsID <- L2.l2NextNamespace <$> getL2Model
+  modify $ \mts ->
+    (
+      mts { mtsL2Model = (mtsL2Model mts) {
+                 L2.l2AllNamespaces = M.insert nsID (blankNamespaceContents ss parent) (L2.l2AllNamespaces (mtsL2Model mts)),
+                 L2.l2NextNamespace = (\(L2.L2NamespaceID v) -> L2.L2NamespaceID (v + 1))
+                                      (L2.l2NextNamespace (mtsL2Model mts))
+               },
+            mtsL2ToL1Map = M.insert nsID nsc (mtsL2ToL1Map mts)
+          }
+    )
+  return nsID
+
+-- | Finds a particular namespace by name in a particular namespace. Note:
+--   This does not do scope resolution, i.e. does not search for the
+--   namespace in parent namespaces, and so should only be used when you know
+--   exactly where the namespace should be.
+findExactNamespace :: L2.L2NamespaceID -> BS.ByteString -> ModelTranslation (Maybe L2.L2NamespaceID)
+findExactNamespace parentNS nsName = do
+  m <- mtsL2Model <$> get
+  let Just pns = M.lookup parentNS (L2.l2AllNamespaces m)
+  return $ M.lookup nsName (L2.l2nsNamespaces pns)
+
+-- | Checks whether a namespace with a specified name exists, and if not, creates
+--   it.
+findOrCreateNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> BS.ByteString -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
+findOrCreateNamespace ss parentNS nsName nsc = do
+  r <- findExactNamespace parentNS nsName
+  case r of
+    Nothing -> registerNewNamespace ss parentNS nsc
+    Just nsid -> return nsid
+
+-- | Takes an optional list of what to import to import, an optional list of what to hide, and a target namespace and model,
+--   and builds a list of symbols to import. Fails with an error if there is a symbol in the what or hiding list which
+--   doesn't actually exist.
+importListFromWhatAndHiding ::
+  Monad m => L2.L2NamespaceID -> L2.L2Model -> Maybe [L1.L1Identifier] -> Maybe [L1.L1Identifier] -> m [L1.L1Identifier]
+importListFromWhatAndHiding nsID m what hiding = do
+  let impList = allSymbolNames nsID m
+      impSet = S.fromList impList
+      whatSet = S.fromList (fromMaybe [] what)
+      hidingSet = S.fromList (fromMaybe [] hiding)
+      missingSyms = (whatSet `S.union` hidingSet) `S.difference` impSet
+  when (not (S.null missingSyms)) . fail $
+    "Import statement mentions the following symbols which don't exist: " ++
+    (intercalate ", " $
+     map (\(L1.L1Identifier ss n) ->
+           (BSC.unpack n) ++ " at " ++ (show ss)) $ S.toList missingSyms)
+  let finalSet = case (what, hiding) of
+        (Nothing, Nothing) -> impSet
+        (Just _, Nothing) -> whatSet
+        (Nothing, Just _) -> impSet `S.difference` hidingSet
+        (Just _, Just _) -> whatSet `S.difference` hidingSet
+  return . S.toList $ finalSet
+
+-- | Finds all symbols in a particular namespace, of all types.
+allSymbolNames :: L2.L2NamespaceID -> L2.L2Model -> [L1.L1Identifier]
+allSymbolNames nsID m =
+  let
+    Just nsc = M.lookup nsID (L2.l2AllNamespaces m)
+  in
+   map (L1.L1Identifier (L2.l2nsSrcSpan nsc)) $
+     concatMap (\f -> f nsc)
+       [M.keys . L2.l2nsNamespaces,
+        M.keys . L2.l2nsDomains,
+        M.keys . L2.l2nsNamedValues,
+        M.keys . L2.l2nsClassValues,
+        M.keys . L2.l2nsUnits,
+        M.keys . L2.l2nsClasses,
+        M.keys . L2.l2nsDomainFunctions,
+        M.keys . L2.l2nsLabels
+       ]
+
+allocDomainID :: ModelTranslation L2.L2DomainID
+allocDomainID = do
+  newID <- L2.l2NextDomain <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2NextDomain = (\(L2.L2DomainID n) -> L2.L2DomainID (n + 1)) newID }
+  return newID
+
+-- | Finds a symbol, using the scoped resolution rules and a custom function to
+--   check each namespace for a symbol of the appropriate type. Fails with an error
+--   appropriate for the end user if the symbol cannot be found.
+findScopedSymbolByRAPath :: L1.SrcSpan -> L2.L2NamespaceID -> L1.L1RelOrAbsPath ->
+                            (L2.L2NamespaceContents -> L1.L1Identifier -> Maybe a) -> ModelTranslation a
+findScopedSymbolByRAPath ss startNS ra tryGet = do
+  (nsra@(L1.L1RelOrAbsPath _ isabs rp), symName) <- maybe (fail $ "Inappropriate use of an empty path, at " ++ show ss)
+                             return $ trySplitRAPathOnLast ra
+  -- Recursively find the namespace...
+  nsid <- maybe (fail $ "Cannot find namespace " ++ show nsra ++ " mentioned at " ++ show ss) return =<<
+          findNamespaceByRAPath startNS nsra
+  let foldStrategy =
+        if (not isabs && null (L1.l1RelPathIDs rp))
+           then flip (flip foldOverNSScopesM Nothing) nsid
+           else (\x -> x Nothing nsid)
+  r <- foldStrategy $ \s nsid' -> (mplus s) <$> do
+    nsc <- (fromJust . M.lookup nsid' . L2.l2AllNamespaces) <$> getL2Model
+    return $ tryGet nsc symName
+  maybe (fail $ "Symbol " ++ (BSC.unpack . L1.l1IdBS $ symName) ++
+                " not found in namespace at " ++ (show . L1.l1IdSS $ symName)) return r
+
+-- | Performs a fold over all namespaces where a symbol might be found.
+foldOverNSScopesM :: (s -> L2.L2NamespaceID -> ModelTranslation s) -> s -> L2.L2NamespaceID -> ModelTranslation s
+foldOverNSScopesM f s0 nsid = do
+  s1 <- f s0 nsid
+  nsc <- (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+  foldOverNSScopesM f s1 (L2.l2nsParent nsc)
+
+-- | Runs a model translation such that any new assertions that are added do not
+--   end up in the global assertion list, but instead becomes part of the result.
+isolateAssertions :: ModelTranslation a -> ModelTranslation (a, [L2.L2Expression])
+isolateAssertions f = do
+  origAssertions <- L2.l2AllAssertions <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = [] }
+  r <- f
+  newAssertions <- L2.l2AllAssertions <$> getL2Model
+  modifyL2Model $ \mod -> mod { L2.l2AllAssertions = origAssertions }
+  return (r, newAssertions)
+
+-- Utility functions that are needed in this file, but don't use any special data structures from here.
+
+-- | Finds the first 'Just' value return from a list of monadic expressions.
+firstJustM :: Monad m => [m (Maybe a)] -> m (Maybe a)
+firstJustM (mh:t) = do
+  h <- mh
+  maybe (firstJustM t) (return . Just) h
+firstJustM [] = return Nothing
+
+-- | Like mapMaybe, but runs in a monad.
+mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM f l = catMaybes `liftM` sequence (map f l)
+
+-- | Like concatMap, but runs in a monad.
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f l = concat `liftM` sequence (map f l)
+
+-- Utility functions that involve L2NSPaths - these are probably going to be unneeded soon.
+
+-- | Finds a namespace in a Level 2 model, treating a particular namespace as root and applying a level 1 namespace path. Fails with an error if the
+--   namespace cannot be found. Does not look up the tree from the starting namespace for other matches if it is not found at the root.
+findNamespaceInL2UsingL1Path :: Monad m => L2.L2NamespaceID -> L2.L2Model -> L1.L1RelPath -> m L2.L2NamespaceID
+findNamespaceInL2UsingL1Path ns0 _ (L1.L1RelPath _ []) = return ns0
+findNamespaceInL2UsingL1Path ns0 l2mod (L1.L1RelPath _ ((L1.L1Identifier ss l1id):l1ids)) = do
+  let Just nsc0 = M.lookup ns0 (L2.l2AllNamespaces l2mod)
+  case M.lookup l1id (L2.l2nsNamespaces nsc0) of
+    Nothing ->
+      fail $ "Attempt to import namespace " ++ (BSC.unpack l1id) ++ " which doesn't exist, at " ++ show ss
+    Just ns1 ->
+      findNamespaceInL2UsingL1Path ns1 l2mod (L1.L1RelPath ss l1ids)
+
+trySplitRAPathOnLast :: L1.L1RelOrAbsPath -> Maybe (L1.L1RelOrAbsPath, L1.L1Identifier)
+trySplitRAPathOnLast (L1.L1RelOrAbsPath ss ra p) =
+   maybe Nothing (\(x, y) -> Just (L1.L1RelOrAbsPath ss ra x, y))
+         (trySplitRPathOnLast p)
+
+trySplitRPathOnLast (L1.L1RelPath rpss []) = Nothing
+trySplitRPathOnLast (L1.L1RelPath rpss l) = Just (L1.L1RelPath rpss (init l), last l)
+
+-- | Recursively change a path to the equivalent path that does not reference
+--   any local imports. Produces Nothing if a symbol eventually refers to a
+--   non-local import; leaves symbols which don't have any imports unchanged.
+--   Fails with an error if it finds an import that refers to something that
+--   doesn't exist.
+ensureNoLocalImports :: L1NSPath -> ModelTranslation (Maybe L1NSPath)
+ensureNoLocalImports p =
+  do
+    l1nsc <- (\(v, _, _) -> v) <$> ask
+    ensureNoLocalImports' l1nsc id p 
+  where
+    ensureNoLocalImports' nsc f (L1NSPathStop) = return . Just $ f L1NSPathStop
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathNamespace ns p) = do
+      case (find (isNamespaceMatching ns) nsc) of
+        Just (L1.L1NSNamespace _ _ nscnext) ->
+          ensureNoLocalImports' nscnext f p
+        _ ->
+          checkRedirect nsc f p ns
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathDomain n) = do
+      undefined -- TODO
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathClass n) = do
+      undefined -- TODO
+    ensureNoLocalImports' (L1.L1NamespaceContents nsc) f (L1NSPathValue n) = do
+      undefined -- TODO
+    isNamespaceMatching name (L1.L1NSNamespace _ (L1.L1Identifier _ name2) _)
+      | name == name2 = True
+    isNamespaceMatching _ _ = False
+    isImportMatching name (L1.L1NSImport _ Nothing _ what hiding _)
+      | Nothing <- what, Nothing <- hiding = True
+      | Just x <- what = any ((==name) . L1.l1IdBS) x
+      | Just x <- hiding = not . any ((==name) . L1.l1IdBS) $ x
+    isImportMatching _ _ = False
+    checkRedirect nsc fToHere pRemain ns = do
+      let imps = filter (isImportMatching ns) nsc
+      flip (flip foldM Nothing) imps $ \st (L1.L1NSImport _ _ p _ _ _) ->
+        (st `mplus`) <$>
+          (maybe (return Nothing)
+                ensureNoLocalImports
+            =<< ((\x -> x pRemain) <$> arpathToNSPathFn (fToHere L1NSPathStop) p))
 
 -- | Finds a Level 2 namespace using a Level 1 RelOrAbsPath
 findNamespaceByRAPath :: L2.L2NamespaceID -> L1.L1RelOrAbsPath -> ModelTranslation (Maybe L2.L2NamespaceID)
