@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, TypeFamilies, PatternGuards #-}
+{-# LANGUAGE DeriveDataTypeable, TypeFamilies, PatternGuards, OverloadedStrings #-}
 module Data.FieldML.Level1ToLevel2 where
 
 import qualified Data.FieldML.Level1Structure as L1
@@ -26,6 +26,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Set as S
 import qualified Data.Traversable as T
 import qualified Data.Foldable as T
+import Data.Monoid
 
 -- | Loads an L2 model, and all dependencies, or returns an error.
 loadL2ModelFromURL :: [String] -> String -> ErrorT String IO (L2.L2Model)
@@ -1171,7 +1172,21 @@ tryResolveOneMapEntry stack currentMaps@(dm,um) done toFix
 --   The context namespace is used so that when there are several options the
 --   most appropriate choice can be shown.
 nsidToFriendlyName :: L2.L2NamespaceID -> L2.L2NamespaceID -> ModelTranslation String
-nsidToFriendlyName = undefined -- TODO
+nsidToFriendlyName context target
+  | context == target = return "Main namespace"
+  | otherwise = do
+    n <- BSC.unpack <$>
+           (fromMaybe "anonymous namespace" <$> (nsidToFriendlyName' context target))
+    nsc <- getNamespaceContents target
+    return $ n ++ (" at " ++ show (L2.l2nsSrcSpan nsc))
+
+nsidToFriendlyName' context target = do
+  allNS <- (M.toList . L2.l2nsNamespaces) <$> getNamespaceContents context
+  foldM (\m (nsname, nsid) -> (liftM (mplus m)) (if nsid == target
+                                           then return (Just nsname)
+                                           else (liftM $ ((nsname <> "::") <>)) <$>
+                                                  nsidToFriendlyName' nsid target))
+        Nothing allNS
 
 -- Utility functions for working with L2 models...
 -- | Fetch the current L2 model out of the state.
