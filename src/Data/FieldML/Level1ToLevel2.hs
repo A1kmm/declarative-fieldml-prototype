@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, TypeFamilies, PatternGuards, OverloadedStrings #-}
-module Data.FieldML.Level1ToLevel2 where
+module Data.FieldML.Level1ToLevel2 (loadL2ModelFromURL) where
 
 import qualified Data.FieldML.Level1Structure as L1
 import qualified Data.FieldML.Level2Structure as L2
@@ -1173,7 +1173,7 @@ tryResolveOneMapEntry stack currentMaps@(dm,um) done toFix
 --   most appropriate choice can be shown.
 nsidToFriendlyName :: L2.L2NamespaceID -> L2.L2NamespaceID -> ModelTranslation String
 nsidToFriendlyName context target
-  | context == target = return "Main namespace"
+  | context == target = return "main namespace"
   | otherwise = do
     n <- BSC.unpack <$>
            (fromMaybe "anonymous namespace" <$> (nsidToFriendlyName' context target))

@@ -3,6 +3,7 @@ module Main where
 
 import Data.FieldML.Parser
 import Data.FieldML.Level1Structure
+import Data.FieldML.Level1ToLevel2
 import System.Console.CmdArgs.Implicit
 import Data.Typeable
 import Data.Data
@@ -23,8 +24,9 @@ main = do
   if modelURL flags == "omitted"
     then putStrLn "You must specify a modelURL"
     else do
-      s <- snd `liftM` (curlGetString_ (modelURL flags) [])
-      case parseFieldML s of
+      res <- runErrorT
+        (loadL2ModelFromURL (includePaths runFieldML) (modelURL runFieldML))
+      case res of
         Left e -> do
           putStrLn "Compilation failed. Details follow:"
           putStrLn e
