@@ -20,7 +20,7 @@ source-repository head
 library
   ghc-options: -funbox-strict-fields
   ghc-prof-options: -auto-all -caf-all
-  build-depends: base >=3 && <5, array, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl, containers, uniplate, data-default
+  build-depends: base >=3 && <5, array, containers, uniplate, parsec, monads-tf, filepath, bytestring, curl, containers, uniplate, data-default, monad-loops
   build-tools: alex, happy
   exposed-modules:
     Data.FieldML.LexicalAnalyser
@@ -31,7 +31,7 @@ library
 
 executable runfieldml
    main-is: Data/FieldML/RunFieldML.hs
-   build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, curl, monads-tf, bytestring, containers, uniplate, filepath
+   build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, curl, monads-tf, bytestring, containers, uniplate, filepath, monad-loops
    ghc-prof-options: -auto-all -caf-all
    ghc-shared-options: -shared -dynamic
 
