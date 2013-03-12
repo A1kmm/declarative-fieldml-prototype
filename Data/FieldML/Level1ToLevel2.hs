@@ -701,7 +701,7 @@ processInternalImports startFrom = do
             childNSID <- findScopedSymbolByRAPath ss curNSID path
                            (\nsc ident -> M.lookup (L1.l1IdBS ident) (L2.l2nsNamespaces nsc))
             when (childNSID `elem` stack) $ do
-              paths <- intercalate ", which imports from " <$> mapM (nsidToFriendlyName nsMain)
+              paths <- intercalate ", which is imported by " <$> mapM (nsidToFriendlyName nsMain)
                          ((childNSID:(takeWhile (/= childNSID) stack)) ++ [childNSID])
               fail $ "Illegal import cycle found involving namespace " ++
                      paths ++ ", at " ++ (show ss)
@@ -1084,7 +1084,88 @@ translateDomainType scope _ nsid (L1.L1DomainType ss dcrs expr) = do
 -- | Attempts to globally replace all temporary aliases for types with their
 --   true values, or fails with an error for the user if a cycle is found.
 fixAliasReferences :: L2.L2NamespaceID -> ModelTranslation ()
-fixAliasReferences nsid = undefined -- TODO
+fixAliasReferences nsid = do
+  initialMaps@(tmpdts, tmpunitexs) <- (\mts -> (mtsTempIDDomainType mts, mtsTempIDUnitEx mts)) <$> get
+  let tmpList = map Left (M.keys tmpdts) ++ map Right (M.keys tmpunitexs)
+  ((finaldts, finalunitexs), _) <- flip (flip foldM (initialMaps, S.empty)) tmpList $
+    \(currentMaps, done) toFix ->
+      tryResolveOneMapEntry [] currentMaps done toFix
+  modifyL2Model $ \mod -> 
+    transformBi (replaceTempDomainType finaldts) .
+    transformBi (replaceTempUnitEx finalunitexs) $ mod
+
+-- | Applies a substitution map to domain type.
+replaceTempDomainType :: M.Map L2.L2DomainID L2.L2DomainType -> L2.L2DomainType -> L2.L2DomainType
+replaceTempDomainType mSubst dt =
+  let
+    addDomTypes = [domType | L2.L2DomainReference _ domId <- universeBi dt,
+                             Just domType <- [M.lookup domId mSubst]]
+    replaceTempDomainExpression (L2.L2DomainReference _ domId)
+      | Just domType <- M.lookup domId mSubst =
+        L2.l2DomainTypeExpression domType
+    replaceTempDomainExpression x = x
+    mergeDomainTypes dtInto@(L2.L2DomainType { L2.l2DomainTypeUnitConstraints = uc,
+                                               L2.l2DomainTypeDomainEqualities = deq,
+                                               L2.l2DomainTypeDomainRelations = drel })
+                     dtDescendent@(L2.L2DomainType { L2.l2DomainTypeUnitConstraints = uc',
+                                                     L2.l2DomainTypeDomainEqualities = deq',
+                                                     L2.l2DomainTypeDomainRelations = drel' }) =
+      --- TODO we need to do something better with scoped domains - as this code stands, it is
+      --       not correct. Assigning global identifiers per DomainType in advance and doing
+      --       something to match parameters when we apply would be one way.
+      --       (perhaps references get rewritten to be type-level lambdas in their parameters,
+      --        if we add a L2DomainExpressionLambda?). Or we could do eta-rewriting and
+      --        conflicting symbol renaming here by just renaming identifiers.
+      dtInto { L2.l2DomainTypeUnitConstraints = uc' ++ uc,
+               L2.l2DomainTypeDomainEqualities = deq' ++ deq,
+               L2.l2DomainTypeDomainRelations = drel' ++ drel }
+    dtSubst = dt { L2.l2DomainTypeExpression = transformBi replaceTempDomainExpression
+                                                           (L2.l2DomainTypeExpression dt) }
+  in
+   foldl' mergeDomainTypes dtSubst addDomTypes
+
+-- | Replaces a temporary unit ID reference with the expression it resolves to.
+replaceTempUnitEx :: M.Map L2.L2BaseUnitsID L2.L2UnitExpression -> L2.L2UnitExpression -> L2.L2UnitExpression
+replaceTempUnitEx m (L2.L2UnitExRef ss buid)
+  | Just uex <- M.lookup buid m = uex
+replaceTempUnitEx _ x = x
+
+-- | Attempts to change an entry in temporary maps into its final form, making
+--   all prerequisite entries into their final form in the process.
+tryResolveOneMapEntry :: [Either L2.L2DomainID L2.L2BaseUnitsID] ->
+                         (M.Map L2.L2DomainID L2.L2DomainType, M.Map L2.L2BaseUnitsID L2.L2UnitExpression) ->
+                         S.Set (Either L2.L2DomainID L2.L2BaseUnitsID) ->
+                         Either L2.L2DomainID L2.L2BaseUnitsID ->
+                         ModelTranslation ((M.Map L2.L2DomainID L2.L2DomainType,
+                                            M.Map L2.L2BaseUnitsID L2.L2UnitExpression),
+                                           S.Set (Either L2.L2DomainID L2.L2BaseUnitsID))
+tryResolveOneMapEntry stack currentMaps@(dm,um) done toFix
+  | toFix `S.member` done = return (currentMaps, done)
+  | toFix `elem` stack = do
+    let describeMapEntry (Left dt) = "domain type at " ++ (show $ L2.l2DomainTypeSS (dm!dt))
+        describeMapEntry (Right uex) = "units expression at " ++ (show $ L2.l2UnitExSS (um!uex))
+    let paths = intercalate ", which is referenced by "
+                  (map describeMapEntry
+                  ((toFix:(takeWhile (/= toFix) stack)) ++ [toFix]))
+    fail $ "Aliases form a cycle, which is invalid: " ++ paths
+  | otherwise =
+    let
+      initialContents = either (Left . flip M.lookup dm) (Right . flip M.lookup um) toFix
+      allDeps = [Left domId | L2.L2DomainReference { L2.l2DomainExpressionRef = domId } <-
+                    universeBi initialContents, domId `M.member` dm] ++
+                [Right buid | L2.L2UnitExRef { L2.l2UnitExRef = buid } <-
+                    universeBi initialContents, buid `M.member` um]
+    in do
+     (finalMaps@(dm, um), done') <-
+       foldM (\(currentMaps, done) dep -> tryResolveOneMapEntry (toFix:stack) currentMaps done dep)
+             (currentMaps, done) allDeps
+     let
+       fixup :: Data a => a -> a
+       fixup =
+           transformBi (replaceTempDomainType dm) . transformBi (replaceTempUnitEx um)
+     return (either (\l -> (M.update (Just . fixup) l dm, um))
+                    (\r -> (dm, M.update (Just . fixup) r um)) toFix,
+             S.insert toFix done)
 
 -- | Maps a namespace ID to a 'friendly name' that can be displayed to the user.
 --   The context namespace is used so that when there are several options the
