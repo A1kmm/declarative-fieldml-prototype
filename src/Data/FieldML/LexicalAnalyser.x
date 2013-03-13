@@ -53,7 +53,7 @@ tokens :-
   instance { returnP TokInstance }
   let { returnP TokLet }
   lookup { returnP TokLookup }
-  my { returnP TokMy }
+  val { returnP TokVal }
   namespace { returnP TokNamespace }
   newbase { returnP TokNewbase }
   of { returnP TokOf }
@@ -86,7 +86,7 @@ tokens :-
   \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
   [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
   [ \. \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
-  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.toStrict $ LBS.tail $ LBS.take (fromIntegral (l - 1)) s)] }
 
 {
 type Byte = Word8
@@ -292,7 +292,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokInstance AlexPosn |
              TokLet AlexPosn |
              TokLookup AlexPosn |
-             TokMy AlexPosn |
+             TokVal AlexPosn |
              TokNamespace AlexPosn |
              TokNewbase AlexPosn |
              TokPathSep AlexPosn | -- ^ The sequence ::

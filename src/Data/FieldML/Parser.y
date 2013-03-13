@@ -29,7 +29,7 @@ import qualified Data.ByteString.Lazy as LBS
        Instance { TokInstance $$ }
        Let { TokLet $$ }
        Lookup { TokLookup $$ }
-       My { TokMy $$ }
+       Val { TokVal $$ }
        Namespace { TokNamespace $$ }
        Newbase { TokNewbase $$ }
        PathSep { TokPathSep $$ }
@@ -65,6 +65,7 @@ import qualified Data.ByteString.Lazy as LBS
 %left lowerEmpty
 %left lowerSep
 %left expressionSig
+%left expressionCombineLambda
 %left PathSep
 %left expressionCombine OpenCurlyBracket OpenProductBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
 %left ForwardSlash
@@ -99,7 +100,7 @@ namespaceStatement
       L1NSDomain (twoPosToSpan $1 $7) $2 $3 $5 $6
     }
   | startBlock(Let) expression closeBlock { L1NSAssertion (twoPosToSpan $1 $3) $2 }
-  | startBlock(My) identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue (twoPosToSpan $1 $4) $2 $3 }
+  | startBlock(Val) identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue (twoPosToSpan $1 $4) $2 $3 }
   | startBlock(Class) identifier classParameters maybe(classContents) closeBlock {
       L1NSClass (twoPosToSpan $1 $5) $2 $3 (maybe [] fst $4) (maybe [] snd $4)
     }
@@ -311,7 +312,7 @@ expression
       L1ExAppend (twoPosToSpan (alexPosToSrcPoint $1)
                                (l1RelOrAbsPIESS $2)) $2
      }
-  | ForwardSlash many(scopedId) RightArrow expression %prec expressionCombine {
+  | ForwardSlash many(scopedId) RightArrow expression %prec expressionCombineLambda {
       let ss = twoPosToSpan (alexPosToSrcPoint $1) (l1ExSS $4)
         in foldl' (\ex sv -> L1ExLambda ss sv ex) $4 $2
     }
