@@ -75,7 +75,7 @@ loadL2ModelFromURL' incl mpath = do
           (r, v) <- liftIO $ curlGetString_ (tryIncl ++ mpath) []
           if r == CurlOK
             then do
-              nsc <- LookupModel . lift . ErrorT $ return (parseFieldML v)
+              nsc <- LookupModel . lift . ErrorT $ return (parseFieldML mpath v)
               finalImpMap <- tryResolveAllImports incl nsc
               mod <- LookupModel . lift $ translateL1ToL2 mpath nsc finalImpMap
               modify (M.insert (BSC.pack fullPath) mod)
@@ -96,7 +96,7 @@ tryResolveAllImports incl nsc = do
 translateL1ToL2 :: String -> L1.L1NamespaceContents -> M.Map BS.ByteString L2.L2Model -> ErrorT String IO L2.L2Model
 translateL1ToL2 mpath l1ns impmap =
   flip runReaderT (handleL1SimpleSyntacticSugar (BSC.pack mpath) l1ns, mpath, impmap) $
-    flip evalStateT (def :: ModelTranslationState) $ do
+    flip evalStateT ((def :: ModelTranslationState) { mtsL2ToL1Map = M.singleton nsMain l1ns} ) $ do
       -- Create a skeleton model, where all symbols except those that are
       -- imported exist, but do not yet have their proper definitions set up
       -- yet.
@@ -220,7 +220,7 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
                          L1.l1nsNamespaceContents = newnsc } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
-          L2.l2nsNamespaces = M.insert nsname myNSID (L2.l2nsNamespaces l2nsc)
+          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc)
              }
         buildSkeletonModel nsss newnsc newNSID
       L1.L1NSDomain { L1.l1nsSS = nsss, L1.l1nsDomainName = L1.L1Identifier _ nsname,
@@ -228,7 +228,7 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
                       L1.l1nsDomainDefinition = dd } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
-          L2.l2nsNamespaces = M.insert nsname myNSID (L2.l2nsNamespaces l2nsc)
+          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc)
              }
         buildSkeletonModel nsss newnsc newNSID
         case dd of
@@ -1235,15 +1235,6 @@ findExactNamespace parentNS nsName = do
   let Just pns = M.lookup parentNS (L2.l2AllNamespaces m)
   return $ M.lookup nsName (L2.l2nsNamespaces pns)
 
--- | Checks whether a namespace with a specified name exists, and if not, creates
---   it.
-findOrCreateNamespace :: L2.SrcSpan -> L2.L2NamespaceID -> BS.ByteString -> L1.L1NamespaceContents -> ModelTranslation L2.L2NamespaceID
-findOrCreateNamespace ss parentNS nsName nsc = do
-  r <- findExactNamespace parentNS nsName
-  case r of
-    Nothing -> registerNewNamespace ss parentNS nsc
-    Just nsid -> return nsid
-
 -- | Takes an optional list of what to import to import, an optional list of what to hide, and a target namespace and model,
 --   and builds a list of symbols to import. Fails with an error if there is a symbol in the what or hiding list which
 --   doesn't actually exist.
@@ -1321,13 +1312,16 @@ trySplitRPathOnLast (L1.L1RelPath rpss l) = Just (L1.L1RelPath rpss (init l), la
 
 -- | Performs a fold over all namespaces where a symbol might be found.
 foldOverNSScopesM :: (s -> L2.L2NamespaceID -> ModelTranslation s) -> s -> L2.L2NamespaceID -> ModelTranslation s
-foldOverNSScopesM f s0 nsid = do
-  s1 <- f s0 nsid
-  nsc <- (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
-  foldOverNSScopesM f s1 (L2.l2nsParent nsc)
+foldOverNSScopesM f s0 nsid
+  | nsid == nsSpecial = return s0
+  | otherwise = do
+    s1 <- f s0 nsid
+    nsc <- (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+    foldOverNSScopesM f s1 (L2.l2nsParent nsc)
 
 -- | Finds a Level 2 namespace using a Level 1 RelOrAbsPath
 findNamespaceByRAPath :: L1.SrcSpan -> L2.L2NamespaceID -> L1.L1RelOrAbsPath -> ModelTranslation L2.L2NamespaceID
+findNamespaceByRAPath _ thisNSID (L1.L1RelOrAbsPath _ _ (L1.L1RelPath _ [])) = return thisNSID
 findNamespaceByRAPath ss thisNSID rapath = findScopedSymbolByRAPath ss thisNSID rapath $ \nsc ident ->
   M.lookup (L1.l1IdBS ident) (L2.l2nsNamespaces nsc)
 

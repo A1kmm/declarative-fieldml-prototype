@@ -18,7 +18,7 @@ import Data.Data
 }
 
 tokens :-
-  [\ \t\r\n]+ / [^\#\ \t\r\n] { \(pn@(AlexPn _ _ col), _, s') l ->
+  [\ \t\r\n]+ / [^\#\ \t\r\n] { \(pn@(AlexPn _ _ _ col), _, s') l ->
     (let possiblyCloseBlock = do
           bi <- alexGetBlockIndent
           if finalCol < bi then
@@ -105,18 +105,18 @@ alexGetByte (p,_,cs) | LBS.null cs = Nothing
                                        p' = alexMove p c
                                     in p' `seq` cs' `seq` Just (b, (p', c, cs'))
 
-data AlexPosn = AlexPn !Int !Int !Int
+data AlexPosn = AlexPn !String !Int !Int !Int
         deriving (Eq, Ord, Data, Typeable)
 instance Show AlexPosn where
-  showsPrec _ (AlexPn _ r c) = showString "line " . shows r . showString ", column " . shows c
+  showsPrec _ (AlexPn f _ r c) = showString f . showString " line " . shows r . showString ", column " . shows c
 
-alexStartPos :: AlexPosn
-alexStartPos = AlexPn 0 1 1
+alexStartPos :: String -> AlexPosn
+alexStartPos fn = AlexPn fn 0 1 1
 
 alexMove :: AlexPosn -> Char -> AlexPosn
-alexMove (AlexPn a l c) '\t' = AlexPn (a+1) l (((c+7) `div` 8)*8+1)
-alexMove (AlexPn a l c) '\n' = AlexPn (a+1) (l+1) 1
-alexMove (AlexPn a l c) _ = AlexPn (a+1) l (c+1)
+alexMove (AlexPn f a l c) '\t' = AlexPn f (a+1) l (((c+7) `div` 8)*8+1)
+alexMove (AlexPn f a l c) '\n' = AlexPn f (a+1) (l+1) 1
+alexMove (AlexPn f a l c) _ = AlexPn f (a+1) l (c+1)
 
 data AlexState = AlexState {
         alex_pos :: !AlexPosn, -- position at current input location
@@ -130,9 +130,9 @@ data AlexState = AlexState {
 
 -- Compile with -funbox-strict-fields for best results!
 
-runAlex :: LBS.ByteString -> Alex a -> Either String a
-runAlex input (Alex f)
-   = case f (AlexState {alex_pos = alexStartPos,
+runAlex :: String -> LBS.ByteString -> Alex a -> Either String a
+runAlex filename input (Alex f)
+   = case f (AlexState {alex_pos = alexStartPos filename,
                         alex_inp = input,
                         alex_chr = '\n',
                         alex_scd = 0,

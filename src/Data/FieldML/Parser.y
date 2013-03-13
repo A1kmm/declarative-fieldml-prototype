@@ -342,7 +342,7 @@ labelledExpression
   : relOrAbsPathPossiblyIntEnd Colon expression { ($1, $3) }
 
 startBlock(t) : t {% do
-                      let (AlexPn _ _ col) = $1
+                      let (AlexPn _ _ _ col) = $1
                       alexPushBlockIndent (col + 1)
                       return $ alexPosToSrcPoint $1
                   }
@@ -380,13 +380,13 @@ happyError failTok = do
   (pn, _, _) <- alexGetInput
   fail $ "Parse error; unexpected token " ++ (show failTok) ++ ", at " ++ (show pn)
 
-parseFieldML :: LBS.ByteString -> Either String L1NamespaceContents
-parseFieldML bs = runAlex bs happyParseFieldML
+parseFieldML :: String -> LBS.ByteString -> Either String L1NamespaceContents
+parseFieldML srcFile bs = runAlex srcFile bs happyParseFieldML
 
-alexPosToSrcPoint (AlexPn _ row col) = SrcSpan { srcFile = "input",
-                                                 srcStartRow = row,
-                                                 srcStartColumn = col,
-                                                 srcEndRow = row,
-                                                 srcEndColumn = col
-                                               }
+alexPosToSrcPoint (AlexPn fn _ row col) = SrcSpan { srcFile = fn,
+                                                    srcStartRow = row,
+                                                    srcStartColumn = col,
+                                                    srcEndRow = row,
+                                                    srcEndColumn = col
+  }
 }
