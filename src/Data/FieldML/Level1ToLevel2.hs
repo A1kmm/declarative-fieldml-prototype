@@ -27,6 +27,7 @@ import qualified Data.Set as S
 import qualified Data.Traversable as T
 import qualified Data.Foldable as T
 import Data.Monoid
+import qualified Debug.Trace
 
 -- | Loads an L2 model, and all dependencies, or returns an error.
 loadL2ModelFromURL :: [String] -> String -> ErrorT String IO (L2.L2Model)
@@ -100,6 +101,7 @@ translateL1ToL2 mpath l1ns impmap =
       -- Create a skeleton model, where all symbols except those that are
       -- imported exist, but do not yet have their proper definitions set up
       -- yet.
+      (l1ns, _, _) <- ask
       buildSkeletonModel (L1.SrcSpan mpath 0 0 0 0) l1ns nsMain
       -- Load all external imports into the model.
       processExternalImports nsMain
@@ -219,16 +221,29 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
       L1.L1NSNamespace { L1.l1nsSS = nsss, L1.l1nsNamespaceName = L1.L1Identifier _ nsname,
                          L1.l1nsNamespaceContents = newnsc } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
+        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents myNSID
+        Debug.Trace.trace ("Adding Label#" ++ show newLabel ++ " into " ++ show myNSID ++ " for " ++ (show nsname)) (return ())
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
-          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc)
+          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc),
+          L2.l2nsLabels = M.insert nsname (L2.L2Label myNSID (fromIntegral newLabel)) (L2.l2nsLabels l2nsc),
+          L2.l2nsNextLabel = newLabel + 1
              }
+        tmpId <- mtsNextTempId <$> get
+        modify $ \mts -> mts { mtsNextTempId = tmpId - 1 }
+        modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
+          L2.l2nsDomains = M.insert nsname (dtRef nsss $ L2.L2DomainID tmpId) (L2.l2nsDomains l2nsc)
+          }
+
         buildSkeletonModel nsss newnsc newNSID
       L1.L1NSDomain { L1.l1nsSS = nsss, L1.l1nsDomainName = L1.L1Identifier _ nsname,
                       L1.l1nsNamespaceContents = newnsc, 
                       L1.l1nsDomainDefinition = dd } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
+        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents myNSID
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
-          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc)
+          L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc),
+          L2.l2nsLabels = M.insert nsname (L2.L2Label myNSID (fromIntegral newLabel)) (L2.l2nsLabels l2nsc),
+          L2.l2nsNextLabel = newLabel + 1
              }
         buildSkeletonModel nsss newnsc newNSID
         case dd of
@@ -759,6 +774,14 @@ translateNSContents scope thisNSID nsc =
         Just childNSID <- M.lookup nsName . L2.l2nsNamespaces <$> getNamespaceContents thisNSID
         Just (L1.L1NamespaceContents childNSC) <- (M.lookup childNSID . mtsL2ToL1Map) <$> get
         translateNSContents scope childNSID childNSC
+        Just (L2.L2DomainType _ _ _ _ (L2.L2DomainReference _ tmpId)) <-
+              M.lookup nsName . L2.l2nsDomains <$> getNamespaceContents thisNSID
+        labs <- (L2.L2DomainExpressionDisjointUnion idss . L2.L2LabelledDomains .
+                   (\n -> [(L2.L2Label childNSID (fromIntegral i), L2.L2DomainExpressionProduct idss (L2.L2LabelledDomains [])) |
+                        i <- [0..(L2.l2nsNextLabel n)]])) <$>
+                  getNamespaceContents childNSID
+        modify $ \mts -> mts { mtsTempIDDomainType = M.insert tmpId (L2.L2DomainType idss [] [] [] labs)
+                                                              (mtsTempIDDomainType mts) }
         return ()
       L1.L1NSDomain { L1.l1nsSS = ss,
                       L1.l1nsDomainName = L1.L1Identifier idss ident,

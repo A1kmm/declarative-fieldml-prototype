@@ -5,6 +5,8 @@
 # refinement will place different points on the same mesh at different
 # refinement levels).
 
+import from "stdlib.fieldml" /
+
 domain XDomain = clone R
 domain YDomain = clone R
 domain Value = clone R
@@ -16,7 +18,7 @@ ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as ElementOnLevel
 
 #  The definition of a refined mesh point (recursive).
 domain RefinedMeshSomething _a = (RefineFurther: (< ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] >) |
-                                  StopRefining: a)
+                                  StopRefining: _a)
 
 domain RefinedMeshPoint = RefinedMeshSomething[_a=(<XDomain, YDomain>)]
 
@@ -30,7 +32,7 @@ ensemble { AtRefinement }
 # The options at each level...
 ensemble { RefineFurther, StopRefining }
 
-my refinedDofField :: RefinedMeshDOFSet
+val refinedDofField :: RefinedMeshDOFSet
 # We need to think more about how to serialise this, because the depth of
 # refinement is variable. For now, define a simple DOF set in place.
 # The nodal values look something like this:
@@ -177,7 +179,7 @@ let ==
      as RefineFurther)
 
 # Now we define a field that will interpolate DOFs using bilinear interpolation.
-my interpolatedField :: (< ChartPoint, RefinedMeshDOFSet >) -> Value
+val interpolatedField :: (< ChartPoint, RefinedMeshDOFSet >) -> Value
 let ==
     interpolatedField
     (\_args -> 
@@ -199,22 +201,22 @@ let ==
                     \_dofsets ->
                         interpolatedField (< ChartPoint: pos', RefinedMeshDOFSet: _dofsets quadrant >)
                           where
-                            my quadrant :: ElementOnLevel
+                            val quadrant :: ElementOnLevel
                             let == quadrant (findQuadrant pos)
-                            my pos' :: ChartPoint
+                            val pos' :: ChartPoint
                             let == pos' (convertToQuadrantCoords pos quadrant)
                )
          where
-           my pos :: ChartPoint
-           my x :: XDomain
-           my y :: YDomain
+           val pos :: ChartPoint
+           val x :: XDomain
+           val y :: YDomain
            let == pos (lookup ChartPoint _args)
            let == x (lookup XDomain pos)
            let == y (lookup YDomain pos)
     )
 
 # Works out where a ChartPoint falls at the next level of refinement.
-my findQuadrant :: ChartPoint -> ElementOnLevel
+val findQuadrant :: ChartPoint -> ElementOnLevel
 let ==
     findQuadrant
     (\_pt -> if ( <= (lookup XDomain _pt) R::0.5)
@@ -232,7 +234,7 @@ let ==
 # This field takes a co-ordinate at one level (e.g. 0.3, 0.3) and a quadrant
 # (e.g. top-left), and makes a coordinate at the next level of refinement.
 # (in this case, 0.6, 0.6).
-my convertToQuadrantCoords :: (< ChartPoint, ElementOnLevel >) -> ChartPoint
+val convertToQuadrantCoords :: (< ChartPoint, ElementOnLevel >) -> ChartPoint
 let == convertToQuadrantCoords 
        (\_arg ->
           (case (lookup ElementOnLevel _arg) of
@@ -250,10 +252,10 @@ let == convertToQuadrantCoords
                         YDomain: asclone (* (- yR R::0.5) R::2) >)
           )
             where
-              my pos :: ChartPoint
+              val pos :: ChartPoint
               let == pos (lookup ChartPoint _arg)
-              my xR :: R
+              val xR :: R
               let == xR (fromclone (lookup XDomain pos))
-              my yR :: R
+              val yR :: R
               let == yR (fromclone (lookup YDomain pos))
        )

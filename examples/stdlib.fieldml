@@ -6,3 +6,4 @@ val <
 val ==
 val asclone
 val fromclone
+val const
