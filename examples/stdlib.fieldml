@@ -1,0 +1,8 @@
+# This file is really just a placeholder to let the example models
+# compile; it will be improved later.
+
+unit metre = newbase
+val <
+val ==
+val asclone
+val fromclone
