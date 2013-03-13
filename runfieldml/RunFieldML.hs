@@ -24,7 +24,7 @@ main = do
     then putStrLn "You must specify a modelURL"
     else do
       res <- runErrorT
-        (loadL2ModelFromURL (includePaths runFieldML) (modelURL runFieldML))
+        (loadL2ModelFromURL (includePaths flags) (modelURL flags))
       case res of
         Left e -> do
           putStrLn "Compilation failed. Details follow:"
