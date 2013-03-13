@@ -190,4 +190,8 @@ instance Eq L1Identifier where
 instance Ord L1Identifier where
   (L1Identifier _ x) `compare` (L1Identifier _ y) = x `compare` y
 
-data L1ScopedID = L1ScopedID { l1ScopedIdSS :: SrcSpan, l1ScopedIdBS :: BS.ByteString } deriving (Eq, Ord, Data, Typeable, Show)
+data L1ScopedID = L1ScopedID { l1ScopedIdSS :: SrcSpan, l1ScopedIdBS :: BS.ByteString } deriving (Data, Typeable, Show)
+instance Eq L1ScopedID where
+  (L1ScopedID _ x) == (L1ScopedID _ y) = x == y
+instance Ord L1ScopedID where
+  (L1ScopedID _ x) `compare` (L1ScopedID _ y) = x `compare` y
