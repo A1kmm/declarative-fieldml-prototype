@@ -31,7 +31,7 @@ library
     Data.FieldML.Level1ToLevel2
 
 executable runfieldml
-   main-is: Data/FieldML/RunFieldML.hs
+   hs-source-dirs: runfieldml
+   main-is: RunFieldML.hs
    build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, monads-tf
    ghc-prof-options: -auto-all -caf-all
-   ghc-shared-options: -shared -dynamic

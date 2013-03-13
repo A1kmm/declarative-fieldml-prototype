@@ -8,7 +8,6 @@ import System.Console.CmdArgs.Implicit
 import Data.Typeable
 import Data.Data
 import Control.Monad.Error
-import Network.Curl
 
 data RunFieldML = RunFieldML {
   includePaths :: [String],
