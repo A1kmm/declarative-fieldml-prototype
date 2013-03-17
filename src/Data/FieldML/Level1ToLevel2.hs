@@ -883,11 +883,11 @@ translateLabelEx scope _ nsid (L1.L1RelOrAbsPathNoInt pss isabs rp) = do
 
 -- | Translates an L1Label to an L2Label, giving an appropriate error if the
 --   label is something other than an ensemble label.
-translateLabelOnly scope ss nsid p = do
+translateLabelOnly context scope ss nsid p = do
   r <- translateLabelEx scope ss nsid p
   case r of
     L2.L2ExReferenceLabel _ l -> return l
-    _ -> fail $ "Expected a label, not a value, at " ++ show ss
+    _ -> fail $ "Expected a label, not a value, in " ++ context ++ " at " ++ show (L1.l1RelOrAbsPIESS p)
 
 -- | Translates an L1Expression to a L2Expression.
 translateExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1Expression -> ModelTranslation L2.L2Expression
@@ -911,22 +911,22 @@ translateExpression scope _ nsid (L1.L1ExLiteralReal ss units rv) =
 translateExpression scope _ nsid (L1.L1ExMkProduct ss values) =
   L2.L2ExMkProduct ss
     <$> mapM (\(l, ex) ->
-               (,) <$> translateLabelOnly scope ss nsid l
+               (,) <$> translateLabelOnly "product label" scope ss nsid l
                    <*> translateExpression scope ss nsid ex
              ) values
 
 translateExpression scope _ nsid (L1.L1ExMkUnion ss label value) =
   L2.L2ExMkUnion ss
-    <$> translateLabelOnly scope ss nsid label
+    <$> translateLabelOnly "union label" scope ss nsid label
     <*> translateExpression scope ss nsid value
 
 translateExpression scope _ nsid (L1.L1ExProject ss label) =
   L2.L2ExProject ss
-    <$> translateLabelOnly scope ss nsid label
+    <$> translateLabelOnly "projection label" scope ss nsid label
 
 translateExpression scope _ nsid (L1.L1ExAppend ss label) =
   L2.L2ExAppend ss
-    <$> translateLabelOnly scope ss nsid label
+    <$> translateLabelOnly "append label" scope ss nsid label
 
 translateExpression scope _ nsid (L1.L1ExLambda ss bvar value) = do
   newBVar <- L2.l2NextScopedValueID <$> getL2Model
@@ -942,7 +942,7 @@ translateExpression scope _ nsid (L1.L1ExCase ss expr values) =
     <$> translateExpression scope ss nsid expr
     <*> mapM (\(l, cex) ->
                (,)
-                 <$> translateLabelOnly scope ss nsid l
+                 <$> translateLabelOnly "case label" scope ss nsid l
                  <*> translateExpression scope ss nsid cex) values
 
 translateExpression scope _ nsid (L1.L1ExLet ss expr closure) = do
@@ -1033,7 +1033,7 @@ translateLabelledDomains :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -
 translateLabelledDomains scope ss nsid (L1.L1LabelledDomains ls) =
   L2.L2LabelledDomains
     <$> mapM (\(l, ex) ->
-                (,) <$> translateLabelOnly scope ss nsid l
+                (,) <$> translateLabelOnly "labelled domains" scope ss nsid l
                     <*> translateDomainExpression scope ss nsid ex
              ) ls
 
