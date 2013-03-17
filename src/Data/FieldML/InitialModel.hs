@@ -49,7 +49,8 @@ initialModel = L2Model {
        l2nsDomains = M.fromList [("N", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dNatural)),
                                  ("Z", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dInteger)),
                                  ("Boolean", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dBoolean))],
-       l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)]
+       l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)],
+       l2nsLabels = M.fromList [("false", L2Label nsBoolean 0), ("true", L2Label nsBoolean 1)]
        }
     ),
     (nsNatural, blankNamespaceContents biSrcSpan nsBuiltinMain {-
