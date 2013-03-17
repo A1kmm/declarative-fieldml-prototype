@@ -17,13 +17,14 @@ ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as Corner
 ensemble { TopLeft, TopRight, BottomLeft, BottomRight } as ElementOnLevel
 
 #  The definition of a refined mesh point (recursive).
-domain RefinedMeshSomething _a = (RefineFurther: (< ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] >) |
-                                  StopRefining: _a)
+domain RefinedMeshSomething _a = clone
+  (RefineFurther: (< ElementOnLevel, AtRefinement: RefinedMeshSomething[_a=_a] >) |
+   StopRefining: _a)
 
 domain RefinedMeshPoint = RefinedMeshSomething[_a=(<XDomain, YDomain>)]
 
-domain RefinedMeshDOFSet = (RefineFurther: ElementOnLevel -> RefinedMeshDOFSet |
-                            StopRefining: Corner -> Value)
+domain RefinedMeshDOFSet = clone (RefineFurther: ElementOnLevel -> RefinedMeshDOFSet |
+                                  StopRefining: Corner -> Value)
 
 domain ChartPoint = (< XDomain, YDomain >)
 
@@ -106,7 +107,7 @@ let ==
                                  ) as RefineFurther)
                         ElementOnLevel::TopRight ->
                           const ((\_corner3 ->
-                                     case _corner4 of
+                                     case _corner3 of
                                        Corner::TopLeft -> const (asclone R::0)
                                        Corner::TopRight -> const (asclone R::6)
                                        Corner::BottomLeft -> const (asclone R::9)
@@ -114,7 +115,7 @@ let ==
                                  ) as StopRefining)
                         ElementOnLevel::BottomLeft ->
                           const ((\_corner3 ->
-                                     case _corner4 of
+                                     case _corner3 of
                                        Corner::TopLeft -> const (asclone R::8)
                                        Corner::TopRight -> const (asclone R::9)
                                        Corner::BottomLeft -> const (asclone R::9)
@@ -122,7 +123,7 @@ let ==
                                  ) as StopRefining)
                         ElementOnLevel::BottomRight ->
                           const ((\_corner3 ->
-                                     case _corner4 of
+                                     case _corner3 of
                                        Corner::TopLeft -> const (asclone R::9)
                                        Corner::TopRight -> const (asclone R::9)
                                        Corner::BottomLeft -> const (asclone R::3)
@@ -219,17 +220,17 @@ let ==
 val findQuadrant :: ChartPoint -> ElementOnLevel
 let ==
     findQuadrant
-    (\_pt -> if ( <= (lookup XDomain _pt) R::0.5)
-                (
-                  if ( <= (lookup YDomain _pt) R::0.5)
-                     ElementOnLevel::TopLeft
-                     ElementOnLevel::BottomLeft
-                )
-                (
-                  if ( <= (lookup YDomain _pt) R::0.5)
-                     ElementOnLevel::TopRight
-                     ElementOnLevel::BottomRight
-                ))
+    (\_pt -> case ( <= (lookup XDomain _pt) R::0.5) of
+                true -> (
+                  case ( <= (lookup YDomain _pt) R::0.5) of
+                     true -> ElementOnLevel::TopLeft
+                     false -> ElementOnLevel::BottomLeft
+                  )
+                false -> (
+                  case ( <= (lookup YDomain _pt) R::0.5) of
+                     true -> ElementOnLevel::TopRight
+                     false -> ElementOnLevel::BottomRight
+                  ))
 
 # This field takes a co-ordinate at one level (e.g. 0.3, 0.3) and a quadrant
 # (e.g. top-left), and makes a coordinate at the next level of refinement.
