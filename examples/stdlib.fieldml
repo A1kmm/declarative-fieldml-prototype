@@ -3,7 +3,13 @@
 
 unit metre = newbase
 val <
+val >
+val <=
+val >=
 val ==
 val asclone
 val fromclone
 val const
+val +
+val *
+val -
