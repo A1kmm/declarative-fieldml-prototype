@@ -178,8 +178,8 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
                             l2DomainExpressionRef :: L2DomainID } |
                           L2DomainExpressionApply {
                             l2DomainExpressionSS :: SrcSpan,
-                            l2DomainExpressionDomain :: L2DomainExpression, 
-                            l2DomainExpressionScopedVarName :: L2ScopedDomainID,
+                            l2DomainExpressionDomainArgs :: [(L2ScopedDomainID, L2DomainExpression)],
+                            l2DomainExpressionUnitArgs :: [(L2ScopedUnitID, L2UnitExpression)],
                             l2DomainExpressionValue :: L2DomainExpression } |
                           L2DomainExpressionLambda {
                             l2DomainExpressionSS :: SrcSpan,

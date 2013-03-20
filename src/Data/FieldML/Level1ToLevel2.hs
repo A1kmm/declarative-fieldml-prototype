@@ -521,10 +521,16 @@ recursivelyImportExternalDomainExpression foreignMod foreignURL targetEx =
     L2.L2DomainExpressionReal ss u ->
       L2.L2DomainExpressionReal ss
         <$> recursivelyImportExternalUnitExpression foreignMod foreignURL u
-    L2.L2DomainExpressionApply ss dom sv val ->
+    L2.L2DomainExpressionApply ss domArgs unitArgs val ->
       L2.L2DomainExpressionApply ss
-        <$> recursivelyImportExternalDomainExpression foreignMod foreignURL dom
-        <*> pure sv -- At the time we process this, the ID doesn't matter.
+        <$> mapM (\(sdid, domExpr) ->
+                   (,) sdid
+                       <$> recursivelyImportExternalDomainExpression foreignMod foreignURL domExpr)
+                 domArgs
+        <*> mapM (\(sdid, unitExpr) ->
+                   (,) sdid
+                       <$> recursivelyImportExternalUnitExpression foreignMod foreignURL unitExpr)
+                 unitArgs
         <*> recursivelyImportExternalDomainExpression foreignMod foreignURL val
     L2.L2DomainFunctionEvaluate ss dfid args ->
       L2.L2DomainFunctionEvaluate ss
@@ -1006,11 +1012,16 @@ translateDomainExpression scope _ nsid (L1.L1DomainExpressionFieldSignature ss d
                                          <*> translateDomainExpression scope ss nsid cod
 translateDomainExpression scope _ nsid (L1.L1DomainExpressionReal ss units) =
   L2.L2DomainExpressionReal ss <$> translateUnitExpression scope ss nsid units
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionApply ss dom (L1.L1ScopedID _ scopedVarN) value) =
-  L2.L2DomainExpressionApply ss
-    <$> translateDomainExpression scope ss nsid dom
-    <*> pure (L2.L2ScopedDomainID scopedVarN 0)
-    <*> translateDomainExpression scope ss nsid value
+translateDomainExpression scope _ nsid (L1.L1DomainExpressionApply ss args value) = do
+  let processOneArg (domArgs, unitArgs) (L1.L1ScopedID _ sdName, Left dex) = do
+        domArg <- ((,) (L2.L2ScopedDomainID sdName 0)) <$>
+                    translateDomainExpression scope ss nsid dex
+        return (domArg : domArgs, unitArgs)
+      processOneArg (domArgs, unitArgs) (L1.L1ScopedID _ sdName, Right uex) = do
+        unitArg <- (,) (L2.L2ScopedUnitID sdName 0)  <$> translateUnitExpression scope ss nsid uex
+        return (domArgs, unitArg : unitArgs)
+  (domArgs, unitArg : unitArgs) <- foldM processOneArg ([], []) args
+  L2.L2DomainExpressionApply ss domArgs unitArgs <$> translateDomainExpression scope ss nsid value
 translateDomainExpression scope _ nsid (L1.L1DomainFunctionEvaluate ss func args) =
   L2.L2DomainFunctionEvaluate ss
     <$> findScopedSymbolByRAPath ss nsid func

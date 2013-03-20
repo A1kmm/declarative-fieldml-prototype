@@ -108,8 +108,7 @@ data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: Sr
                             l1DomainExpressionUnits :: L1UnitExpression } |
                           L1DomainExpressionApply {
                             l1DomainExpressionSS :: SrcSpan,
-                            l1DomainExpressionDomain :: L1DomainExpression, 
-                            l1DomainExpressionScopedVarName :: L1ScopedID,
+                            l1DomainExpressionArgs :: [(L1ScopedID, Either L1DomainExpression L1UnitExpression)],
                             l1DomainExpressionValue :: L1DomainExpression } |
                           L1DomainFunctionEvaluate {
                             l1DomainExpressionSS :: SrcSpan,

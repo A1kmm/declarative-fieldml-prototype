@@ -226,7 +226,7 @@ domainExpression
                                                                                     $1 $3 }
   | domainExpression OpenSqBracket sepBy1(domainApplyArg,Comma) CloseSqBracket %prec OpenSqBracket {
     let ss = twoPosToSpan (l1DomainExpressionSS $1) (alexPosToSrcPoint $4) in
-      foldl (\d (sv,ex) -> L1DomainExpressionApply ss d sv ex) $1 $3
+      L1DomainExpressionApply ss $3 $1
     }
   | R maybeBracketedUnits {
       L1DomainExpressionReal (alexPosToSrcPoint $1) $2
@@ -246,8 +246,9 @@ domainExprStartsWithPath
 maybeBracketedUnits : bracketedUnits %prec OpenSqBracket { $1 }
                     | {- empty -} %prec preferOpenSqBracket { L1UnitExDimensionless (SrcSpan "built-in" 0 0 0 0) }
 bracketedUnits : OpenSqBracket unitExpression CloseSqBracket { $2 }
-domainApplyArg :: { (L1ScopedID, L1DomainExpression) }
-               : scopedId Equal domainExpression { ($1, $3) }
+domainApplyArg :: { (L1ScopedID, Either L1DomainExpression L1UnitExpression) }
+               : Unit scopedId Equal unitExpression { ($2, Right $4)}
+               | scopedId Equal domainExpression { ($1, Left $3) }
 
 bracketDomainExpression : {- empty -} { \ex _ -> return ex } -- Just a bracketed expression.
                         | Colon domainExpression Pipe labelledDomains(Pipe) {\shouldBeLabel ss ->
