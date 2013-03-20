@@ -37,7 +37,6 @@ data L1NamespaceStatement =
                 } |
   L1NSDomain { l1nsSS :: SrcSpan,
                l1nsDomainName :: L1Identifier,
-               l1nsDomainParameters :: [L1ScopedID],
                l1nsDomainDefinition :: L1DomainDefinition,
                l1nsNamespaceContents :: L1NamespaceContents
              } |
@@ -46,13 +45,13 @@ data L1NamespaceStatement =
                 } |
   L1NSNamedValue { l1nsSS :: SrcSpan,
                    l1nsValueName :: L1Identifier,
-                   l1nsDomainType :: Maybe L1DomainType
+                   l1nsDomainType :: Maybe L1DomainExpression
                  } |
   L1NSClass { l1nsSS :: SrcSpan,
               l1nsClassName :: L1Identifier,
               l1nsClassParameters :: [(L1ScopedID, L1Kind)],
               l1nsClassDomainFunctions :: [(L1Identifier, Int)],
-              l1nsClassValues :: [(L1Identifier, L1DomainType)]
+              l1nsClassValues :: [(L1Identifier, L1DomainExpression)]
             } |
   L1NSEnsemble { l1nsSS :: SrcSpan,
                  l1nsLabels :: [L1Identifier],
@@ -62,36 +61,39 @@ data L1NamespaceStatement =
              l1nsUnitDefinition :: L1UnitDefinition } |
   L1NSInstance { l1nsSS :: SrcSpan,
                  l1nsInstanceOfClass :: L1RelOrAbsPath,
-                 l1nsClassArguments :: [L1DomainType],
-                 l1nsInstanceDomainFunctions :: [(L1Identifier, [L1DomainType], L1DomainExpression)],
+                 l1nsClassArguments :: [L1DomainExpression],
+                 l1nsInstanceDomainFunctions :: [(L1Identifier, [L1DomainExpression], L1DomainExpression)],
                  l1nsInstanceValues :: [L1Expression]
                }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 -- | One entry for each parameter, parameter is L1Kind [] if it doesn't itself have parameters.
-data L1Kind = L1Kind [L1Kind] deriving (Eq, Ord, Data, Typeable, Show)
+data L1Kind = L1Kind {
+    l1KindFreeDomains :: [(L1ScopedID, L1Kind)],
+    l1KindFreeUnits :: [L1ScopedID]
+  } deriving (Eq, Ord, Data, Typeable, Show)
 
-data L1DomainDefinition = L1CloneDomain { l1DomainDefSS :: SrcSpan, l1DomainDefType :: L1DomainType } |
+data L1DomainDefinition = L1CloneDomain { l1DomainDefSS :: SrcSpan, l1DomainDefType :: L1DomainExpression } |
                           L1SubsetDomain { l1DomainDefSS :: SrcSpan,
-                                           l1DomainDefType :: L1DomainType,
+                                           l1DomainDefType :: L1DomainExpression,
                                            l1DomainDefUsing :: L1Expression } |
                           L1ConnectDomain { l1DomainDefSS :: SrcSpan,
-                                            l1DomainDefType :: L1DomainType,
+                                            l1DomainDefType :: L1DomainExpression,
                                             l1DomainDefUsing :: L1Expression } |
                           L1DomainDefDomainType { l1DomainDefSS :: SrcSpan,
-                                                  l1DomainDefType :: L1DomainType }
+                                                  l1DomainDefType :: L1DomainExpression }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
-data L1DomainType = L1DomainType { l1DomainTypeSS :: SrcSpan, l1DomainTypeHead :: [L1DomainClassRelation],
-                                   l1DomainTypeExpression ::L1DomainExpression }
-                          deriving (Eq, Ord, Show, Data, Typeable)
-data L1DomainClassRelation = L1DCRUnitConstraint { l1DCRExpr1 :: L1UnitExpression,
-                                                   l1DCRExpr2 :: L1UnitExpression } |
-                             L1DCREquality { l1DCRType1 :: L1DomainExpression,
-                                             l1DCRType2 :: L1DomainExpression } |
-                             L1DCRRelation { l1DCRClass :: L1RelOrAbsPath,
-                                             l1DCRArguments :: [L1DomainExpression] }
-                             deriving (Eq, Ord, Show, Data, Typeable)
+data L1DomainHeadMember =
+  L1DHMScopedDomain { l1DHMDomainName :: L1ScopedID, l1DHMDomainKind :: L1Kind } |
+  L1DHMScopedUnit { l1DHMDomainName :: L1ScopedID } |
+  L1DHMUnitConstraint { l1DHMExpr1 :: L1UnitExpression,
+                        l1DHMExpr2 :: L1UnitExpression } |
+  L1DHMEquality { l1DHMType1 :: L1DomainExpression,
+                  l1DHMType2 :: L1DomainExpression } |
+  L1DHMRelation { l1DHMClass :: L1RelOrAbsPath,
+                  l1DHMArguments :: [L1DomainExpression] }
+  deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: SrcSpan,
                                                       l1DomainExpressionLabels :: L1LabelledDomains } |
@@ -122,7 +124,12 @@ data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: Sr
                             l1DomainExpressionSS :: SrcSpan,
                             -- Note: The IntEnd case is a parsing convenience -
                             -- if it survives into the model, it is an error.
-                            l1DomainExpressionRef :: L1RelOrAbsPathPossiblyIntEnd }
+                            l1DomainExpressionRef :: L1RelOrAbsPathPossiblyIntEnd } |
+                          L1DomainExpressionLambda {
+                            l1DomainExpressionSS :: SrcSpan,
+                            l1DomainLambdaHead :: [L1DomainHeadMember], 
+                            l1DomainLambdaExpr :: L1DomainExpression
+                            }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1LabelledDomains = L1LabelledDomains [(L1RelOrAbsPathPossiblyIntEnd, L1DomainExpression)]
@@ -170,7 +177,7 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                  l1ExStringValue :: BS.ByteString } |
                     L1ExSignature { l1ExSS :: SrcSpan,
                                     l1ExExpression :: L1Expression,
-                                    l1ExSignature :: L1DomainType }
+                                    l1ExSignature :: L1DomainExpression }
                   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1UnitDefinition = L1UnitDefNewBase { l1UnitDefSS :: SrcSpan } |

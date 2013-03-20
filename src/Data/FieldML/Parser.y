@@ -64,6 +64,7 @@ import qualified Data.ByteString.Lazy as LBS
 
 %left lowerEmpty
 %left lowerSep
+%left HeadSep
 %left expressionSig
 %left expressionCombineLambda
 %left PathSep
@@ -96,8 +97,8 @@ namespaceStatement
   | startBlock(Namespace) identifier Where namespaceContents closeBlock {
       L1NSNamespace (twoPosToSpan $1 $5) $2 $4
     }
-  | startBlock(Domain) identifier many(scopedId) Equal domainDefinition orEmptyNSContents(whereNamespaceContents) closeBlock {
-      L1NSDomain (twoPosToSpan $1 $7) $2 $3 $5 $6
+  | startBlock(Domain) identifier Equal domainDefinition orEmptyNSContents(whereNamespaceContents) closeBlock {
+      L1NSDomain (twoPosToSpan $1 $6) $2 $4 $5
     }
   | startBlock(Let) expression closeBlock { L1NSAssertion (twoPosToSpan $1 $3) $2 }
   | startBlock(Val) identifier maybe(domainTypeAnnotation) closeBlock { L1NSNamedValue (twoPosToSpan $1 $4) $2 $3 }
@@ -108,22 +109,22 @@ namespaceStatement
       L1NSEnsemble (twoPosToSpan $1 $6) $3 $5
     }
   | startBlock(Unit) identifier Equal unitDefinition closeBlock { L1NSUnit (twoPosToSpan $1 $5) $2 $4 }
-  | startBlock(Instance) relOrAbsPath OpenBracket sepBy(domainType,Comma) CloseBracket maybe(instanceContents) closeBlock {
+  | startBlock(Instance) relOrAbsPath OpenBracket sepBy(domainExpression,Comma) CloseBracket maybe(instanceContents) closeBlock {
       L1NSInstance (twoPosToSpan $1 $7) $2 $4 (maybe [] fst $6) (maybe [] snd $6)
     }
 
 classParameters : OpenBracket sepBy(classParameter,Comma) CloseBracket { $2 }
-classParameter : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind []) $2) }
+classParameter :: { (L1ScopedID, L1Kind) } : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind [] []) $2) }
 
-kindAnnotation : PathSep kindSpec { $2 }
+kindAnnotation
+  :: { L1Kind }
+  : PathSep OpenBracket kindSpec CloseBracket { $3 }
 kindSpec
-  : NamedSymbol %prec kindSpec
-       {% if snd $1 == "*"
-            then return (L1Kind [])
-            else happyError (TokNamedSymbol $1)
-       }
-  | OpenBracket kindSpec CloseBracket %prec kindSpec { $2 }
-  | kindSpec RightArrow kindSpec %prec kindSpec { (\(L1Kind k) -> L1Kind ($1:k)) $3 }
+  :: { L1Kind }
+  : maybe(kindDomainList) maybe(kindUnitList) { L1Kind (fromMaybe [] $1) (fromMaybe [] $2) }
+kindDomainList :: { [(L1ScopedID, L1Kind)] } : Domain sepBy1(kindDomain, Comma) { $2 }
+kindUnitList :: { [L1ScopedID] } : Unit sepBy1(scopedId,Comma) { $2 }
+kindDomain :: { (L1ScopedID, L1Kind) } : scopedId kindAnnotation { ($1, $2) }
 
 classContents : Where classDomainFunctions classValues { ($2, $3) }
 classDomainFunctions : many(classDomainFunction) { $1 }
@@ -134,11 +135,11 @@ classValues : many(classValue) { $1 }
 classValue : identifier domainTypeAnnotation { ($1, $2) }
 
 instanceContents : Where many(instanceDomainFunction) many(instanceValue) { ($2, $3) }
-instanceDomainFunction : startBlock(Domain) identifier OpenBracket sepBy1(domainType, Comma) CloseBracket Equal domainExpression closeBlock {
+instanceDomainFunction : startBlock(Domain) identifier OpenBracket sepBy1(domainExpression, Comma) CloseBracket Equal domainExpression closeBlock {
     ($2, $4, $7)
   }
 instanceValue : startBlock(Let) expression closeBlock { $2 }
-domainTypeAnnotation : PathSep domainType { $2 }
+domainTypeAnnotation : PathSep domainExpression { $2 }
 
 fromURL : From String { snd $2 }
 identList :: { [L1Identifier] }
@@ -192,21 +193,23 @@ identifier : NamedSymbol { L1Identifier (alexPosToSrcPoint $ fst $1) (snd $1) }
 scopedId : ScopedSymbol { L1ScopedID (alexPosToSrcPoint $ fst $1) (snd $1) }
 asId : As identifier { $2 }
 
-domainDefinition : Clone domainType { L1CloneDomain (alexPosToSrcPoint $1) $2 }
-                 | startBlock(Subset) domainType Using expression closeBlock { L1SubsetDomain (twoPosToSpan $1 $5) $2 $4 }
-                 | startBlock(Connect) domainType Using expression closeBlock { L1ConnectDomain (twoPosToSpan $1 $5) $2 $4 }
-                 | domainType { L1DomainDefDomainType (l1DomainTypeSS $1) $1 }
+domainDefinition : Clone domainExpression { L1CloneDomain (alexPosToSrcPoint $1) $2 }
+                 | startBlock(Subset) domainExpression Using expression closeBlock { L1SubsetDomain (twoPosToSpan $1 $5) $2 $4 }
+                 | startBlock(Connect) domainExpression Using expression closeBlock { L1ConnectDomain (twoPosToSpan $1 $5) $2 $4 }
+                 | domainExpression { L1DomainDefDomainType (l1DomainExpressionSS $1) $1 }
 
-domainType : domainHead domainExpression { L1DomainType (twoPosToSpan (fst $1) (l1DomainExpressionSS $2)) (snd $1) $2 }
-domainHead
-  : OpenSqBracket sepBy(domainClassRelation,Comma) CloseSqBracket HeadSep { (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $4), $2) }
-  | {- empty -} {% do
-                    (pos, _, _) <- alexGetInput
-                    return (alexPosToSrcPoint pos, [])
-                }
-domainClassRelation : Unit unitExpression Tilde unitExpression { L1DCRUnitConstraint $2 $4 }
-                    | Class relOrAbsPath OpenBracket sepBy(domainExpression,Comma) CloseBracket { L1DCRRelation $2 $4 }
-                    | domainExpression Tilde domainExpression { L1DCREquality $1 $3 }
+domainHeadMember : Unit unitExpression domainHeadUnit {% $3 $2 }
+                    | Domain scopedId kindAnnotation { L1DHMScopedDomain $2 $3 }
+                    | Class relOrAbsPath OpenBracket sepBy(domainExpression,Comma) CloseBracket { L1DHMRelation $2 $4 }
+                    | domainExpression Tilde domainExpression { L1DHMEquality $1 $3 }
+
+domainHeadUnit : Tilde unitExpression {
+       \uex -> return (L1DHMUnitConstraint uex $2)
+    } | {- empty -} {
+        \uex -> case uex of
+                   L1UnitScopedVar _ sv -> return (L1DHMScopedUnit sv)
+                   _ -> fail $ "Malformed domain head unit; expected either "
+    }
 
 domainExpression
   :: { L1DomainExpression }
@@ -216,6 +219,9 @@ domainExpression
   | OpenBracket domainExpression bracketDomainExpression CloseBracket {%
       $3 $2 (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $4))
                                                                       }
+| OpenSqBracket sepBy(domainHeadMember,Comma) CloseSqBracket HeadSep domainExpression {
+  L1DomainExpressionLambda (twoPosToSpan (alexPosToSrcPoint $1) (l1DomainExpressionSS $5)) $2 $5
+    }
   | domainExpression RightArrow domainExpression { L1DomainExpressionFieldSignature (twoPosToSpan (l1DomainExpressionSS $1) (l1DomainExpressionSS $3))
                                                                                     $1 $3 }
   | domainExpression OpenSqBracket sepBy1(domainApplyArg,Comma) CloseSqBracket %prec OpenSqBracket {
@@ -322,8 +328,8 @@ expression
   | String {
       L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
     }
-  | expression PathSep domainType %prec expressionSig {
-      L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainTypeSS $3)) $1 $3
+  | expression PathSep domainExpression %prec expressionSig {
+      L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainExpressionSS $3)) $1 $3
     }
 
 expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {

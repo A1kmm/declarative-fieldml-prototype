@@ -46,9 +46,9 @@ initialModel = L2Model {
                                     ("N", nsNatural),
                                     ("Z", nsInteger),
                                     ("Boolean", nsBoolean)],
-       l2nsDomains = M.fromList [("N", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dNatural)),
-                                 ("Z", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dInteger)),
-                                 ("Boolean", L2DomainType biSrcSpan [] [] [] (L2DomainReference biSrcSpan dBoolean))],
+       l2nsDomains = M.fromList [("N", L2DomainReference biSrcSpan dNatural),
+                                 ("Z", L2DomainReference biSrcSpan dInteger),
+                                 ("Boolean", L2DomainReference biSrcSpan dBoolean)],
        l2nsNamedValues = M.fromList [("true", vTrue), ("false", vFalse), ("undefined", vUndefined)],
        l2nsLabels = M.fromList [("false", L2Label nsBoolean 0), ("true", L2Label nsBoolean 1)]
        }
@@ -82,7 +82,8 @@ initialModel = L2Model {
   l2NextClassID = L2ClassID reservedIDs,
   l2AllInstances = [],
   l2NextScopedValueID = L2ScopedValueID reservedIDs,
-  l2NextScopedUnitID = L2ScopedUnitID reservedIDs,  
+  l2NextScopedUnitID = L2ScopedUnitID "!unnamed" reservedIDs,
+  l2NextScopedDomainID = L2ScopedDomainID "!unnamed" reservedIDs,
   l2AllDomainFunctions = M.empty,
   l2NextDomainFunctionID = L2DomainFunctionID reservedIDs,
   l2AllClassValues = M.empty,

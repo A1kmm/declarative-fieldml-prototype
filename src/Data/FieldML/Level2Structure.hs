@@ -17,12 +17,22 @@ newtype L2ValueID = L2ValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2BaseUnitsID = L2BaseUnitsID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ClassID = L2ClassID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ScopedValueID = L2ScopedValueID Int deriving (Eq, Ord, Data, Typeable, Show)
-newtype L2ScopedUnitID = L2ScopedUnitID Int deriving (Eq, Ord, Data, Typeable, Show)
+data L2ScopedUnitID = L2ScopedUnitID BS.ByteString Int deriving (Data, Typeable, Show)
+instance Eq L2ScopedUnitID where
+  (L2ScopedUnitID _ v1) == (L2ScopedUnitID _ v2) = v1 == v2
+instance Ord L2ScopedUnitID where
+  (L2ScopedUnitID _ v1) `compare` (L2ScopedUnitID _ v2) = v1 `compare` v2
+data L2ScopedDomainID = L2ScopedDomainID BS.ByteString Int deriving (Data, Typeable, Show)
+instance Eq L2ScopedDomainID where
+  (L2ScopedDomainID _ v1) == (L2ScopedDomainID _ v2) = v1 == v2
+instance Ord L2ScopedDomainID where
+  (L2ScopedDomainID _ v1) `compare` (L2ScopedDomainID _ v2) = v1 `compare` v2
 newtype L2DomainFunctionID = L2DomainFunctionID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2ClassValueID = L2ClassValueID Int deriving (Eq, Ord, Data, Typeable, Show)
 
 type L2ScopedValueMap = M.Map Identifier L2ScopedValueID
 type L2ScopedUnitMap = M.Map Identifier L2ScopedUnitID
+type L2ScopedDomainMap = M.Map Identifier L2ScopedDomainID
 
 data L2Model =
   L2Model
@@ -42,6 +52,7 @@ data L2Model =
     l2AllInstances :: [L2InstanceContents],
     l2NextScopedValueID :: L2ScopedValueID,
     l2NextScopedUnitID :: L2ScopedUnitID,
+    l2NextScopedDomainID :: L2ScopedDomainID,
     l2AllDomainFunctions :: M.Map L2DomainFunctionID L2DomainFunctionContents,
     l2NextDomainFunctionID :: L2DomainFunctionID,
     l2AllClassValues :: M.Map L2ClassValueID L2ClassValueContents,
@@ -54,7 +65,7 @@ data L2NamespaceContents =
   {
     l2nsSrcSpan :: SrcSpan,
     l2nsNamespaces :: M.Map Identifier L2NamespaceID,
-    l2nsDomains :: M.Map Identifier L2DomainType,
+    l2nsDomains :: M.Map Identifier L2DomainExpression,
     l2nsNamedValues :: M.Map Identifier L2ValueID,
     l2nsClassValues :: M.Map Identifier L2ClassValueID,
     l2nsUnits :: M.Map Identifier L2UnitExpression,
@@ -66,13 +77,10 @@ data L2NamespaceContents =
   }
   deriving (Eq, Ord, Data, Typeable, Show)
 
-type L2ScopedDomainID = BS.ByteString
-
 data L2DomainContents =
   L2ClonelikeDomainContents {
       l2DomainSS :: SrcSpan,
-      l2DomainParameters :: [L2ScopedDomainID],
-      l2DomainCloneOf :: L2DomainType,
+      l2DomainCloneOf :: L2DomainExpression,
       l2DomainCloneTypeSpecific :: L2DomainCloneType
     } |
   L2BuiltinDomainContents {
@@ -88,7 +96,7 @@ data L2DomainCloneType = L2DomainClone |
 
 data L2ValueContents = L2ValueContents {
     l2ValueSS :: SrcSpan,
-    l2ValueType :: Maybe L2DomainType
+    l2ValueType :: Maybe L2DomainExpression
   } deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2BaseUnitContents = L2BaseUnitContents SrcSpan deriving (Eq, Ord, Show, Data, Typeable)
@@ -104,8 +112,8 @@ data L2ClassContents = L2ClassContents {
 data L2InstanceContents = L2InstanceContents {
   l2InstanceSS :: SrcSpan,
   l2InstanceOfClass :: L2ClassID,
-  l2InstanceClassArguments :: [L2DomainType],
-  l2InstanceDomainFunctions :: [(L2DomainFunctionID, [L2DomainType], L2DomainExpression)],
+  l2InstanceClassArguments :: [L2DomainExpression],
+  l2InstanceDomainFunctions :: [(L2DomainFunctionID, [L2DomainExpression], L2DomainExpression)],
   l2InstanceValues :: [L2Expression]
   }
                      deriving (Eq, Ord, Show, Data, Typeable)
@@ -130,7 +138,7 @@ data L2Expression = L2ExApply { l2ExSS :: SrcSpan, l2ExOp :: L2Expression, l2ExA
                               l2ExClosureAssertions :: [L2Expression] } |
                     L2ExString { l2ExSS :: SrcSpan, l2ExStringValue :: BS.ByteString } |
                     L2ExSignature { l2ExSS :: SrcSpan, l2ExExpression :: L2Expression,
-                                    l2ExSignature :: L2DomainType }
+                                    l2ExSignature :: L2DomainExpression }
                       deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2UnitExpression = L2UnitExDimensionless { l2UnitExSS :: SrcSpan } |
@@ -144,12 +152,6 @@ data L2UnitExpression = L2UnitExDimensionless { l2UnitExSS :: SrcSpan } |
                         L2UnitScopedVar { l2UnitExSS :: SrcSpan, l2UnitExScoped :: L2ScopedUnitID }
                       deriving (Eq, Ord, Show, Data, Typeable)
 
-data L2DomainType = L2DomainType { l2DomainTypeSS :: SrcSpan,
-                                   l2DomainTypeUnitConstraints :: [(L2UnitExpression, L2UnitExpression)],
-                                   l2DomainTypeDomainEqualities :: [(L2DomainExpression, L2DomainExpression)],
-                                   l2DomainTypeDomainRelations :: [(L2ClassID, [L2DomainExpression])],
-                                   l2DomainTypeExpression :: L2DomainExpression }
-                    deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: SrcSpan,
                                                       l2DomainExpressionLabels :: L2LabelledDomains } |
@@ -162,11 +164,6 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
                           L2DomainExpressionReal {
                             l2DomainExpressionSS :: SrcSpan,
                             l2DomainExpressionUnits :: L2UnitExpression } |
-                          L2DomainExpressionApply {
-                            l2DomainExpressionSS :: SrcSpan,
-                            l2DomainExpressionDomain :: L2DomainExpression, 
-                            l2DomainExpressionScopedVarName :: L2ScopedDomainID,
-                            l2DomainExpressionValue :: L2DomainExpression } |
                           L2DomainFunctionEvaluate {
                             l2DomainExpressionSS :: SrcSpan,
                             l2DomainExpressionFunction :: L2DomainFunctionID,
@@ -178,12 +175,26 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
                             } |
                           L2DomainReference {
                             l2DomainExpressionSS :: SrcSpan,
-                            l2DomainExpressionRef :: L2DomainID }
+                            l2DomainExpressionRef :: L2DomainID } |
+                          L2DomainExpressionApply {
+                            l2DomainExpressionSS :: SrcSpan,
+                            l2DomainExpressionDomain :: L2DomainExpression, 
+                            l2DomainExpressionScopedVarName :: L2ScopedDomainID,
+                            l2DomainExpressionValue :: L2DomainExpression } |
+                          L2DomainExpressionLambda {
+                            l2DomainExpressionSS :: SrcSpan,
+                            l2DomainExpressionScopedDomains :: [(L2ScopedDomainID, L2Kind)],
+                            l2DomainExpressionScopedUnits :: [L2ScopedUnitID],
+                            l2DomainExpressionUnitConstraints :: [(L2UnitExpression, L2UnitExpression)],
+                            l2DomainExpressionDomainEqualities :: [(L2DomainExpression, L2DomainExpression)],
+                            l2DomainExpressionDomainRelations :: [(L2ClassID, [L2DomainExpression])],
+                            l2DomainExpressionExpression :: L2DomainExpression
+                            }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2LabelledDomains = L2LabelledDomains [(L2Label, L2DomainExpression)]
                        deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2DomainFunctionContents = L2DomainFunctionContents SrcSpan Int deriving (Eq, Ord, Show, Data, Typeable)
-data L2ClassValueContents = L2ClassValueContents SrcSpan L2DomainType deriving (Eq, Ord, Show, Data, Typeable)
+data L2ClassValueContents = L2ClassValueContents SrcSpan L2DomainExpression deriving (Eq, Ord, Show, Data, Typeable)
 data L2Label = L2Label { l2LabelEnsemble :: L2NamespaceID, l2LabelValue :: Integer } deriving (Eq, Ord, Show, Data, Typeable)
