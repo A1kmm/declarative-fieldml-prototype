@@ -113,6 +113,13 @@ translateL1ToL2 mpath l1ns impmap =
       fixAliasReferences nsMain
       getL2Model
 
+newtype DesugarTmp = DesugarTmp Int
+desugarTmpName :: State DesugarTmp BS.ByteString
+desugarTmpName = do
+  DesugarTmp sugId <- get
+  put (DesugarTmp (sugId + 1))
+  return $ BSC.pack ("_desugar_" ++ show sugId)
+
 -- | Some L1 constructs can be translated to an equivalent canonical L1 that
 --   doesn't use certain features. This function is run to simplify the L1
 --   input slightly to make the L1 -> L2 translation slightly easier to write.
@@ -122,7 +129,10 @@ translateL1ToL2 mpath l1ns impmap =
 --     => ensemble {...} as x => namespace x where ensemble {...}
 handleL1SimpleSyntacticSugar :: BS.ByteString -> L1.L1NamespaceContents -> L1.L1NamespaceContents
 handleL1SimpleSyntacticSugar self =
-    transformBi (g . f)
+    transformBi (g . f) . (\v -> evalState (transformBiM (
+                                               desugarComplexLambda .
+                                               desugarL1Patterns .
+                                               desugarFCase) v) (DesugarTmp 0))
   where
     f (imp@L1.L1NSImport { L1.l1nsSS = ss, L1.l1nsImportAs = Just impas}) =
       L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = impas,
@@ -137,6 +147,25 @@ handleL1SimpleSyntacticSugar self =
     g (imp@L1.L1NSImport { L1.l1nsImportFrom = Just impfrom })
       | impfrom == self = imp { L1.l1nsImportFrom = Nothing }
     g x = x
+
+desugarFCase :: L1.L1Expression -> State DesugarTmp L1.L1Expression
+desugarFCase (L1ExFCase ss values) = do
+  tmpScopedID <- L1.L1ScopedID ss <$> desugarTmpName
+  L1ExLambda ss (L1.L1PatternBind ss tmpScopedID) (L1ExCase ss (L1ExBoundVariable ss tmpScopedID) values)
+desugarFCase x = return x
+
+desugarComplexLambda :: L1.L1Expression -> State DesugarTmp L1.L1Expression
+desugarComplexLambda simpleLambda@(L1.L1ExLambda _ (L1.L1PatternBind _ _) _) = return simpleLambda
+desugarComplexLambda (L1.L1ExLambda ss complexPattern value) =
+  return $
+    L1.L1ExFCase ss [(complexPattern, value)]
+desugarComplexLambda x = return x
+
+desugarL1Patterns :: L1.L1Expression -> L1.L1Expression
+desugarL1Patterns ex@(L1.L1ExCase ss expr values) = do
+  return ()
+
+desugarL1Patterns ex = ex
 
 -- | The ModelTranslation monad carries all state and reader information needed to
 --   translate a L1 model into a L2 model.
@@ -938,7 +967,7 @@ translateExpression scope _ nsid (L1.L1ExAppend ss label) =
   L2.L2ExAppend ss
     <$> translateLabelOnly "append label" scope ss nsid label
 
-translateExpression scope _ nsid (L1.L1ExLambda ss bvar value) = do
+translateExpression scope _ nsid (L1.L1ExLambda ss (L1.L1PatternBind _ bvar) value) = do
   newBVar <- L2.l2NextScopedValueID <$> getL2Model
   modifyL2Model $ \mod -> mod {
     L2.l2NextScopedValueID = (\(L2.L2ScopedValueID n) ->
@@ -950,7 +979,7 @@ translateExpression scope _ nsid (L1.L1ExLambda ss bvar value) = do
 translateExpression scope _ nsid (L1.L1ExCase ss expr values) =
   L2.L2ExCase ss
     <$> translateExpression scope ss nsid expr
-    <*> mapM (\(l, cex) ->
+    <*> mapM (\(L1.L1PatternAs _ l (L1.L1PatternIgnore _), cex) ->
                (,)
                  <$> translateLabelOnly "case label" scope ss nsid l
                  <*> translateExpression scope ss nsid cex) values

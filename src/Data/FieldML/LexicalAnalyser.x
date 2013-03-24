@@ -46,6 +46,7 @@ tokens :-
   dimensionless { returnP TokDimensionless }
   domain { returnP TokDomain }
   ensemble { returnP TokEnsemble }
+  fcase { returnP TokFCase }
   from { returnP TokFrom }
   "=>" { returnP TokHeadSep }
   hiding { returnP TokHiding }
@@ -83,7 +84,8 @@ tokens :-
   \~ / ([^\~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]|[\r\n]) { returnP TokTilde }
   ":" { returnP TokColon }
   R / ([^A-Za-z0-9_']|[\r\n]) { returnP TokR }
-  \_[A-Za-z0-9_']* { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  \_[A-Za-z0-9_']+ { \(p, _, s) l -> return [TokScopedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
+  \_ / ([^\~ \. \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|A-Za-z0-9_']|[\r\n]) { returnP TokUnderscore }
   [A-Za-z][A-Za-z0-9_']* { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
   [ \. \~ \` \! \@ \$ \% \^ \& \* \- \+ \= \< \> \? \|]+ { \(p, _, s) l -> return [TokNamedSymbol (p, LBS.toStrict $ LBS.take (fromIntegral l) s)] }
   \"([^\\\"]*(\\[\"rntf\\]))*[^\\\"]*\" { \(p, _, s) l -> return [TokString (p, LBS.toStrict $ LBS.tail $ LBS.take (fromIntegral (l - 1)) s)] }
@@ -285,6 +287,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokDimensionless AlexPosn |
              TokDomain AlexPosn |
              TokEnsemble AlexPosn |
+             TokFCase AlexPosn |
              TokFrom AlexPosn |
              TokHeadSep AlexPosn | -- ^ The sequence =>
              TokHiding AlexPosn |
@@ -325,6 +328,7 @@ data Token = -- Straight keywords and multi-char symbols
              TokReal (AlexPosn, Double) |
              TokScopedSymbol (AlexPosn, BS.ByteString) |
              TokSignedInt (AlexPosn, Int) |
+             TokUnderscore AlexPosn |
              -- Special tokens
              -- | Hit when a token is encountered at a lower level of indent
              --   than required for the current block

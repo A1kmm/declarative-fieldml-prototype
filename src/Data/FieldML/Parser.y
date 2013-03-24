@@ -22,6 +22,7 @@ import qualified Data.ByteString.Lazy as LBS
        Dimensionless { TokDimensionless $$ }
        Domain { TokDomain $$ }
        Ensemble { TokEnsemble $$ }
+       FCase { TokFCase $$ }
        From { TokFrom $$ }
        HeadSep { TokHeadSep $$ }
        Hiding { TokHiding $$ }
@@ -35,6 +36,7 @@ import qualified Data.ByteString.Lazy as LBS
        PathSep { TokPathSep $$ }
        RightArrow { TokRightArrow $$ }
        Subset { TokSubset $$ }
+       Underscore { TokUnderscore $$ }
        Unit { TokUnit $$ }
        Using { TokUsing $$ }
        Where { TokWhere $$ }
@@ -68,7 +70,7 @@ import qualified Data.ByteString.Lazy as LBS
 %left expressionSig
 %left expressionCombineLambda
 %left PathSep
-%left expressionCombine OpenCurlyBracket OpenProductBracket As R Slash ScopedSymbol Where Int SignedInt Append Case Lookup String
+%left expressionCombine OpenCurlyBracket OpenProductBracket As R Slash ScopedSymbol Where Int SignedInt Append Case FCase Lookup String
 %left ForwardSlash
 %left Comma Pipe
 %left OpenBracket
@@ -319,12 +321,15 @@ expression
       L1ExAppend (twoPosToSpan (alexPosToSrcPoint $1)
                                (l1RelOrAbsPIESS $2)) $2
      }
-  | ForwardSlash many(scopedId) RightArrow expression %prec expressionCombineLambda {
+  | ForwardSlash many(pattern) RightArrow expression %prec expressionCombineLambda {
       let ss = twoPosToSpan (alexPosToSrcPoint $1) (l1ExSS $4)
         in foldl' (\ex sv -> L1ExLambda ss sv ex) $4 $2
     }
   | startBlock(Case) expression Of many(expressionCase) closeBlock {
       L1ExCase (twoPosToSpan $1 $5) $2 $4
+    }
+  | startBlock(FCase) many(expressionCase) closeBlock {
+      L1ExFCase (twoPosToSpan $1 $3) $2
     }
   | String {
       L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
@@ -333,7 +338,22 @@ expression
       L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainExpressionSS $3)) $1 $3
     }
 
-expressionCase : startBlockRelOrAbsPathPossiblyIntEnd RightArrow expression closeBlock {
+pattern :: { L1Pattern }
+        : Underscore { L1PatternIgnore (alexPosToSrcPoint $1) }
+        | scopedId { L1PatternBind (l1ScopedIdSS $1) $1 }
+        | pattern As relOrAbsPathPossiblyIntEnd {
+            L1PatternAs (twoPosToSpan (l1PatternSS $1) (l1RelOrAbsPIESS $3)) $3 $1
+          }
+        | relOrAbsPathPossiblyIntEnd {
+          L1PatternAs (l1RelOrAbsPIESS $1) $1 (L1PatternIgnore (l1RelOrAbsPIESS $1))
+          }
+        | startBlock(OpenProductBracket) sepBy1(patternProductArg,Comma) CloseProductBracket closeBlock {
+          L1PatternProduct (twoPosToSpan $1 $4) $2
+          }
+patternProductArg :: { (L1Identifier, L1Pattern) }
+                  : identifier Colon pattern { ($1, $3) }
+
+expressionCase : startBlockPattern RightArrow expression closeBlock {
     ($1, $3)
   }
 
@@ -354,10 +374,10 @@ startBlock(t) : t {% do
                       alexPushBlockIndent (col + 1)
                       return $ alexPosToSrcPoint $1
                   }
-startBlockRelOrAbsPathPossiblyIntEnd
-  : relOrAbsPathPossiblyIntEnd {%
+startBlockPattern
+  : pattern {%
       do
-        let col = srcStartColumn (l1RelOrAbsPIESS $1)
+        let col = srcStartColumn (l1PatternSS $1)
         alexPushBlockIndent (col + 1)
         return $1
                                }

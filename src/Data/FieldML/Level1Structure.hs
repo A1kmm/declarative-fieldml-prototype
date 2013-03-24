@@ -73,6 +73,20 @@ data L1Kind = L1Kind {
     l1KindFreeUnits :: [L1ScopedID]
   } deriving (Eq, Ord, Data, Typeable, Show)
 
+-- | A description of a pattern to match.
+data L1Pattern = 
+  L1PatternIgnore { l1PatternSS :: SrcSpan } |
+  L1PatternBind { l1PatternSS :: SrcSpan,
+                  l1PatternBind :: L1ScopedID } |
+  L1PatternAs { l1PatternSS :: SrcSpan,
+                l1PatternAsWhat :: L1RelOrAbsPathPossiblyIntEnd,
+                l1PatternMatch :: L1Pattern
+              } |
+  L1PatternProduct {
+    l1PatternSS :: SrcSpan,
+    l1PatternProductArgs :: [(L1Identifier, L1Pattern)]
+                   } deriving (Eq, Ord, Show, Data, Typeable)
+
 data L1DomainDefinition = L1CloneDomain { l1DomainDefSS :: SrcSpan, l1DomainDefType :: L1DomainExpression } |
                           L1SubsetDomain { l1DomainDefSS :: SrcSpan,
                                            l1DomainDefType :: L1DomainExpression,
@@ -155,7 +169,7 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                       l1ExUnits :: L1UnitExpression,
                                       l1ExRealValue :: Double } |
                     L1ExMkProduct { l1ExSS :: SrcSpan,
-                                    l1ExValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
+                                    l1ExProdValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
                     L1ExMkUnion { l1ExSS :: SrcSpan,
                                   l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
                                   l1ExValue :: L1Expression } |
@@ -164,11 +178,13 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                     L1ExAppend { l1ExSS :: SrcSpan,
                                  l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExLambda { l1ExSS :: SrcSpan,
-                                 l1ExBvar :: L1ScopedID,
+                                 l1ExBvar :: L1Pattern,
                                  l1ExValue :: L1Expression } |
+                    L1ExFCase { l1ExSS :: SrcSpan,
+                                l1ExValues :: [(L1Pattern, L1Expression)] } |
                     L1ExCase { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
-                               l1ExValues :: [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)] } |
+                               l1ExValues :: [(L1Pattern, L1Expression)] } |
                     L1ExLet { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
                                l1ExClosure :: L1NamespaceContents } |
