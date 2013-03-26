@@ -98,6 +98,17 @@ data L1DomainDefinition = L1CloneDomain { l1DomainDefSS :: SrcSpan, l1DomainDefT
                                                   l1DomainDefType :: L1DomainExpression }
                           deriving (Eq, Ord, Show, Data, Typeable)
 
+data L1ClassExpression = L1ClassExpressionReference { l1ClassExSS :: SrcSpan,
+                                                      l1ClassExClassID :: L1RelOrAbsPath } |
+                         L1ClassExpressionOpenDisjointUnion { l1ClassExSS :: SrcSpan,
+                                                              l1ClassExLabels :: L1LabelledDomains } |
+                         -- This list constructor is not yet properly supported, but it is here as a
+                         -- a reminder that we need decent type level integer and list calculus so
+                         -- things like general tensors can be implemented.
+                         L1ClassExpressionList { l1ClassExSS :: SrcSpan,
+                                                 l1ClassExEx :: [L1ClassExpression] }
+  deriving (Eq, Ord, Show, Data, Typeable)
+
 data L1DomainHeadMember =
   L1DHMScopedDomain { l1DHMDomainName :: L1ScopedID, l1DHMDomainKind :: L1Kind } |
   L1DHMScopedUnit { l1DHMDomainName :: L1ScopedID } |
@@ -105,14 +116,15 @@ data L1DomainHeadMember =
                         l1DHMExpr2 :: L1UnitExpression } |
   L1DHMEquality { l1DHMType1 :: L1DomainExpression,
                   l1DHMType2 :: L1DomainExpression } |
-  L1DHMRelation { l1DHMClass :: L1RelOrAbsPath,
+  L1DHMRelation { l1DHMClass :: L1ClassExpression,
                   l1DHMArguments :: [L1DomainExpression] }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: SrcSpan,
                                                       l1DomainExpressionLabels :: L1LabelledDomains } |
-                          L1DomainExpressionDisjointUnion { l1DomainExpressionSS :: SrcSpan,
-                                                            l1DomainExpressionLabels :: L1LabelledDomains } |
+                          L1DomainExpressionDisjointUnion {
+                            l1DomainExpressionSS :: SrcSpan,
+                            l1DomainExpressionLabels :: L1LabelledDomains } |
                           L1DomainExpressionFieldSignature {
                             l1DomainExpressionSS :: SrcSpan,
                             l1DomainExpressionDomain :: L1DomainExpression,
@@ -140,7 +152,7 @@ data L1DomainExpression = L1DomainExpressionProduct { l1DomainExpressionSS :: Sr
                             l1DomainExpressionRef :: L1RelOrAbsPathPossiblyIntEnd } |
                           L1DomainExpressionLambda {
                             l1DomainExpressionSS :: SrcSpan,
-                            l1DomainLambdaHead :: [L1DomainHeadMember], 
+                            l1DomainLambdaHead :: [L1DomainHeadMember],
                             l1DomainLambdaExpr :: L1DomainExpression
                             }
                           deriving (Eq, Ord, Show, Data, Typeable)
@@ -173,10 +185,14 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                     L1ExMkUnion { l1ExSS :: SrcSpan,
                                   l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
                                   l1ExValue :: L1Expression } |
-                    L1ExUnmkUnion { l1ExSS :: SrcSpan, | -- Note: No explicit syntax, but created by desugarer.
+                    L1ExUnmkUnion { l1ExSS :: SrcSpan, -- Note: No explicit syntax, but created by desugarer.
                                     l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
                                     l1ExValue :: L1Expression
                                   } |
+                    L1ExIsLabel { l1ExSS :: SrcSpan, -- Note: No explicit syntax, but created by desugarer.
+                                  l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
+                                  l1ExValue :: L1Expression
+                                } |
                     L1ExProject { l1ExSS :: SrcSpan,
                                   l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExAppend { l1ExSS :: SrcSpan,
@@ -185,10 +201,13 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                                  l1ExBvar :: L1Pattern,
                                  l1ExValue :: L1Expression } |
                     L1ExFCase { l1ExSS :: SrcSpan,
-                                l1ExValues :: [(L1Pattern, L1Expression)] } |
+                                l1ExClosed :: Bool,
+                                l1ExValues :: Either [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)]
+                                                     [(L1Pattern, L1Expression)] } |
                     L1ExCase { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
-                               l1ExValues :: [(L1Pattern, L1Expression)] } |
+                               l1ExValues :: Either [(L1RelOrAbsPathPossiblyIntEnd, L1Expression)]
+                                                    [(L1Pattern, L1Expression)] } |
                     L1ExLet { l1ExSS :: SrcSpan,
                                l1ExExpr :: L1Expression,
                                l1ExClosure :: L1NamespaceContents } |

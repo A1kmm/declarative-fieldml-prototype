@@ -130,9 +130,10 @@ desugarTmpName = do
 handleL1SimpleSyntacticSugar :: BS.ByteString -> L1.L1NamespaceContents -> L1.L1NamespaceContents
 handleL1SimpleSyntacticSugar self =
     transformBi (g . f) . (\v -> evalState (transformBiM (
-                                               desugarComplexLambda .
-                                               desugarL1Patterns .
-                                               desugarFCase) v) (DesugarTmp 0))
+                                               desugarL1Patterns <=<
+                                               desugarFCase <=<
+                                               desugarComplexLambda                                               
+                                               ) v) (DesugarTmp 0))
   where
     f (imp@L1.L1NSImport { L1.l1nsSS = ss, L1.l1nsImportAs = Just impas}) =
       L1.L1NSNamespace { L1.l1nsSS = ss, L1.l1nsNamespaceName = impas,
@@ -149,66 +150,67 @@ handleL1SimpleSyntacticSugar self =
     g x = x
 
 desugarFCase :: L1.L1Expression -> State DesugarTmp L1.L1Expression
-desugarFCase (L1ExFCase ss values) = do
+desugarFCase (L1.L1ExFCase ss isClosed values) = do
   tmpScopedID <- L1.L1ScopedID ss <$> desugarTmpName
-  L1ExLambda ss (L1.L1PatternBind ss tmpScopedID) (L1ExCase ss (L1ExBoundVariable ss tmpScopedID) values)
+  return $ L1.L1ExLambda ss (L1.L1PatternBind ss tmpScopedID) (L1.L1ExCase ss (L1.L1ExBoundVariable ss tmpScopedID) values)
 desugarFCase x = return x
 
 desugarComplexLambda :: L1.L1Expression -> State DesugarTmp L1.L1Expression
 desugarComplexLambda simpleLambda@(L1.L1ExLambda _ (L1.L1PatternBind _ _) _) = return simpleLambda
 desugarComplexLambda (L1.L1ExLambda ss complexPattern value) =
   return $
-    L1.L1ExFCase ss [(complexPattern, value)]
+    L1.L1ExFCase ss False (Right [(complexPattern, value)])
 desugarComplexLambda x = return x
 
-pathGlobal :: BS.ByteString -> L1.L1RelOrAbsPathPossiblyIntEnd
-pathGlobal g = L1.L1RelOrAbsPathNoInt ss True (L1RelPath ss [L1.L1Identifier ss g])
+pathGlobal :: L1.SrcSpan -> BS.ByteString -> L1.L1RelOrAbsPathPossiblyIntEnd
+pathGlobal ss g = L1.L1RelOrAbsPathNoInt ss True (L1.L1RelPath ss [L1.L1Identifier ss g])
 
-makeErrorExpression :: BS.ByteString -> L1.L1Expression
-makeErrorExpression v = (L1.L1ExApply ss
-                         (L1.L1ExReference ss (pathGlobal "error"))
-                         (L1.L1ExString ss v)
-                        )
+makeErrorExpression :: L1.SrcSpan -> BS.ByteString -> L1.L1Expression
+makeErrorExpression ss v = (L1.L1ExApply ss
+                             (L1.L1ExReference ss (pathGlobal ss "error"))
+                             (L1.L1ExString ss v)
+                           )
 
-desugarConst :: L1.L1Expression -> State DesugarTmp L1.L1Expression
-desugarConst ex = L1.L1ExLambda ss <$> (L1.L1ExBoundVariable ss <$> (L1.L1ScopedID <$> desugarTmpName)) <*> (pure ex)
+ignoreArgumentLambda :: L1.SrcSpan -> L1.L1Expression -> State DesugarTmp L1.L1Expression
+ignoreArgumentLambda ss ex =
+  L1.L1ExLambda ss
+    <$> (L1.L1PatternBind ss <$> (L1.L1ScopedID ss <$> desugarTmpName))
+    <*> (pure ex)
 
 desugarL1Patterns :: L1.L1Expression -> State DesugarTmp L1.L1Expression
-desugarL1Patterns ex@(L1.L1ExCase ss expr values) =
-    -- We sequentially test each value for a match, and if they match, we then go ahead and try to extract the contents.
+desugarL1Patterns ex@(L1.L1ExCase ss expr (Right values)) =
+  -- We sequentially test each value for a match, and if they match, we then go ahead and try to extract the contents.
   let
-    addPatternToCase (pat, ifEx) otherwiseEx =
+    addPatternToCase otherwiseEx (pat, ifEx) =
       L1.L1ExCase ss
-        <$> (testPatternUsing ss expr pat)
+        <$> (testPatternUsing expr pat)
         <*> (
-              (\x y -> [x, y])
-               <$> ((,) (L1.L1PatternAs ss (pathGlobal "true") L1.L1PatternIgnore) <$>
-                    (desugarConst =<< patternToExtractLambdas expr pat ifEx))
-               <*> (L1.L1PatternAs ss (pathGlobal "false") L1.L1PatternIgnore, desugarConst otherwiseEx)
+              (\x y -> Left [x, y])
+               <$> ((,) (pathGlobal ss "true") <$>
+                      (ignoreArgumentLambda ss =<< patternToExtractLambdas expr pat ifEx))
+               <*> ((,) (pathGlobal ss "false") <$>
+                    ignoreArgumentLambda ss otherwiseEx)
             )
-    foldM addPatternToCase (makeErrorExpression $ "Nothing matched pattern at " <> (BSC.pack . show $ ss)) (reverse values)
-  return ()
-desugarL1Patterns ex = ex
+  in
+    foldM addPatternToCase (makeErrorExpression ss $ "Nothing matched pattern at " <> (BSC.pack . show $ ss)) (reverse values)
+desugarL1Patterns ex = return ex
 
 testPatternUsing :: L1.L1Expression -> L1.L1Pattern -> State DesugarTmp L1.L1Expression
-testPatternUsing _ (L1.L1PatternIgnore ss) = L1.L1ExReference ss (pathGlobal "true")
-testPatternUsing _ (L1.L1PatternBind ss _) = L1.L1ExReference ss (pathGlobal "true")
+testPatternUsing _ (L1.L1PatternIgnore ss) = return $ L1.L1ExReference ss (pathGlobal ss "true")
+testPatternUsing _ (L1.L1PatternBind ss _) = return $ L1.L1ExReference ss (pathGlobal ss "true")
 testPatternUsing testEx (L1.L1PatternAs ss label pattern) = do
   lambdaScoped <- L1.L1ScopedID ss <$> desugarTmpName
   subPatternTest <- testPatternUsing (L1.L1ExBoundVariable ss lambdaScoped) pattern
-  return $ 
-    L1.L1ExCase ss testEx [(L1.L1PatternAs ss label L1.L1PatternIgnore,
-                            L1.L1ExLambda ss (L1.L1PatternBind ss lambdaScoped) subPatternTest),
-                           (L1.L1PatternIgnore ss, L1.L1ExReference ss (pathGlobal "false"))]
+  return $ L1.L1ExIsLabel ss label testEx
 testPatternUsing testEx (L1.L1PatternProduct ss []) =
-  return $ (L1.L1ExReference ss (pathGlobal "true"))
-testPatternUsing testEx (L1.L1PatternProduct ss args) =
+  return $ (L1.L1ExReference ss (pathGlobal ss "true"))
+testPatternUsing testEx (L1.L1PatternProduct ss args) = do
   let
-    testProductPart (label, pat) = testPatternUsing (L1.L1ExApply (L1.L1ExProject ss label) testEx) pat
-  in
-   foldM (\(exOther, prodThis) -> L1.L1ExApply (L1.L1ExApply ss (L1.L1ExReference ss (pathGlobal "&&")) exOther)
+    testProductPart (label, pat) = testPatternUsing (L1.L1ExApply ss (L1.L1ExProject ss label) testEx) pat
+  lastTest <- (testProductPart (last args))
+  foldM (\exOther prodThis -> L1.L1ExApply ss (L1.L1ExApply ss (L1.L1ExReference ss (pathGlobal ss "&&")) exOther)
                                                <$> testProductPart prodThis
-         ) <$> (testProductPart (last args)) <*> (pure . init $ args)
+        ) lastTest (init args)
 
 patternToExtractLambdas :: L1.L1Expression -> L1.L1Pattern -> L1.L1Expression -> State DesugarTmp L1.L1Expression
 patternToExtractLambdas testEx (L1.L1PatternIgnore ss) ifEx = pure ifEx
@@ -216,8 +218,11 @@ patternToExtractLambdas testEx (L1.L1PatternBind ss svar) ifEx =
   return $ L1.L1ExApply ss (L1.L1ExLambda ss (L1.L1PatternBind ss svar) ifEx) testEx
 patternToExtractLambdas testEx (L1.L1PatternAs ss label pattern) ifEx =
   patternToExtractLambdas (L1.L1ExUnmkUnion ss label testEx) pattern ifEx
+patternToExtractLambdas _ (L1.L1PatternProduct ss []) ifEx = return ifEx
 patternToExtractLambdas testEx (L1.L1PatternProduct ss args) ifEx =
-  undefined -- TODO
+  foldM (\oldIfEx (label, pattern) ->
+          patternToExtractLambdas (L1.L1ExApply ss (L1.L1ExProject ss label) testEx) pattern oldIfEx)
+        ifEx args
 
 -- | The ModelTranslation monad carries all state and reader information needed to
 --   translate a L1 model into a L2 model.
@@ -633,10 +638,21 @@ recursivelyImportExternalDomainExpression foreignMod foreignURL targetEx =
                     <$> recursivelyImportExternalDomainExpression foreignMod foreignURL dex1
                     <*> recursivelyImportExternalDomainExpression foreignMod foreignURL dex2) dEqs
         <*> mapM (\(cls, dexs) -> (,)
-                      <$> recursivelyImportExternalClass foreignMod foreignURL cls
+                      <$> recursivelyImportExternalClassExpression foreignMod foreignURL cls
                       <*> mapM (recursivelyImportExternalDomainExpression foreignMod foreignURL) dexs
                  ) dRels
         <*> recursivelyImportExternalDomainExpression foreignMod foreignURL dex
+
+recursivelyImportExternalClassExpression :: L2.L2Model -> L2.Identifier -> L2.L2ClassExpression -> ModelTranslation L2.L2ClassExpression
+recursivelyImportExternalClassExpression foreignMod foreignURL clsex =
+  case clsex of
+    L2.L2ClassExpressionReference ss clsid -> L2.L2ClassExpressionReference ss <$>
+                                                recursivelyImportExternalClass foreignMod foreignURL clsid
+    L2.L2ClassExpressionOpenDisjointUnion ss labs ->
+      L2.L2ClassExpressionOpenDisjointUnion ss <$>
+        recursivelyImportExternalLabelledDomains foreignMod foreignURL labs
+    L2.L2ClassExpressionList ss exs ->
+      L2.L2ClassExpressionList ss <$> mapM (recursivelyImportExternalClassExpression foreignMod foreignURL) exs
 
 recursivelyImportExternalLabelledDomains :: L2.L2Model -> L2.Identifier -> L2.L2LabelledDomains -> ModelTranslation L2.L2LabelledDomains
 recursivelyImportExternalLabelledDomains foreignMod foreignURL (L2.L2LabelledDomains ldl) =
@@ -676,6 +692,12 @@ recursivelyImportExternalExpression foreignMod foreignURL targetEx =
                      <*> recursivelyImportExternalExpression foreignMod foreignURL ex) vals
     L2.L2ExMkUnion ss l ex ->
       L2.L2ExMkUnion ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
+                        <*> recursivelyImportExternalExpression foreignMod foreignURL ex
+    L2.L2ExUnmkUnion ss l ex ->
+      L2.L2ExUnmkUnion ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
+                          <*> recursivelyImportExternalExpression foreignMod foreignURL ex
+    L2.L2ExIsLabel ss l ex ->
+      L2.L2ExIsLabel ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
                         <*> recursivelyImportExternalExpression foreignMod foreignURL ex
     L2.L2ExProject ss l ->
       L2.L2ExProject ss <$> recursivelyImportExternalLabel foreignMod foreignURL l
@@ -1011,6 +1033,16 @@ translateExpression scope _ nsid (L1.L1ExMkUnion ss label value) =
     <$> translateLabelOnly "union label" scope ss nsid label
     <*> translateExpression scope ss nsid value
 
+translateExpression scope _ nsid (L1.L1ExUnmkUnion ss label value) =
+  L2.L2ExUnmkUnion ss
+    <$> translateLabelOnly "union label" scope ss nsid label
+    <*> translateExpression scope ss nsid value
+
+translateExpression scope _ nsid (L1.L1ExIsLabel ss label value) =
+  L2.L2ExIsLabel ss
+    <$> translateLabelOnly "union label" scope ss nsid label
+    <*> translateExpression scope ss nsid value
+
 translateExpression scope _ nsid (L1.L1ExProject ss label) =
   L2.L2ExProject ss
     <$> translateLabelOnly "projection label" scope ss nsid label
@@ -1027,14 +1059,21 @@ translateExpression scope _ nsid (L1.L1ExLambda ss (L1.L1PatternBind _ bvar) val
   L2.L2ExLambda ss newBVar <$>
       translateExpression (scope { siValueIDMap = M.insert bvar newBVar (siValueIDMap scope)})
                            ss nsid value
+translateExpression _ _ _ (L1.L1ExLambda ss _ _) = do
+  fail $ "Internal Compiler Error: Non-simple lambda pattern remains after desugar, at " ++ (show ss)
 
-translateExpression scope _ nsid (L1.L1ExCase ss expr values) =
+translateExpression scope _ nsid (L1.L1ExCase ss expr (Left values)) =
   L2.L2ExCase ss
     <$> translateExpression scope ss nsid expr
-    <*> mapM (\(L1.L1PatternAs _ l (L1.L1PatternIgnore _), cex) ->
+    <*> mapM (\(l, cex) ->
                (,)
                  <$> translateLabelOnly "case label" scope ss nsid l
                  <*> translateExpression scope ss nsid cex) values
+
+translateExpression _ _ _ (L1.L1ExFCase ss _ _) =
+  fail $ "Internal Compiler Error - fcase remains after desugar, at " ++ (show ss)
+translateExpression _ _ _ (L1.L1ExCase ss _ (Right _)) =
+  fail $ "Internal Compiler Error - non-closed case remains after desugar, at " ++ (show ss)
 
 translateExpression scope _ nsid (L1.L1ExLet ss expr closure) = do
   letNS <- registerNewNamespace ss nsid closure
@@ -1152,17 +1191,27 @@ translateDomainExpression scope _ nsid (L1.L1DomainExpressionLambda ss dh dexpr)
         dex1' <- translateDomainExpression scope' ss nsid dex1
         dex2' <- translateDomainExpression scope' ss nsid dex2
         return (uc, (dex1', dex2'):de, dr)
-      processDomainHeadMember' (uc, de, dr) (L1.L1DHMRelation cpath args) = do
+      processDomainHeadMember' (uc, de, dr) (L1.L1DHMRelation classex args) = do
+        l2ClassEx <- translateClassExpression scope' ss nsid classex
         args' <- mapM (translateDomainExpression scope' ss nsid) args
-        classID <-
-          (findScopedSymbolByRAPath ss nsid cpath $ \nsc className ->
-            M.lookup (L1.l1IdBS className) (L2.l2nsClasses nsc))
-        return (uc, de, (classID, args'):dr)
+        return (uc, de, (l2ClassEx, args'):dr)
       processDomainHeadMember' x _ = return x
   (uConstrs, dEqs, dRels) <-
     foldM processDomainHeadMember' ([], [], []) dh
   dexpr2 <- translateDomainExpression scope' ss nsid dexpr
   return $ L2.L2DomainExpressionLambda ss scopedDomains scopedUnits uConstrs dEqs dRels dexpr2
+
+-- | Translates an L1ClassExpression into an L2ClassExpression
+translateClassExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1ClassExpression -> ModelTranslation L2.L2ClassExpression
+translateClassExpression scope _ nsid (L1.L1ClassExpressionReference ss cpath) = do
+  classID <-
+    (findScopedSymbolByRAPath ss nsid cpath $ \nsc className ->
+      M.lookup (L1.l1IdBS className) (L2.l2nsClasses nsc))
+  return $ L2.L2ClassExpressionReference ss classID
+translateClassExpression scope _ nsid (L1.L1ClassExpressionOpenDisjointUnion ss labels) =
+  L2.L2ClassExpressionOpenDisjointUnion ss <$> translateLabelledDomains scope ss nsid labels
+translateClassExpression scope _ nsid (L1.L1ClassExpressionList ss exlist) =
+  L2.L2ClassExpressionList ss <$> (mapM (translateClassExpression scope ss nsid) exlist)
 
 -- | Translates an L1LabeleldDomains into an L2LabelledDomains.
 translateLabelledDomains :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->

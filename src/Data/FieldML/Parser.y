@@ -3,6 +3,7 @@
 module Data.FieldML.Parser (parseFieldML) where
 import Data.FieldML.LexicalAnalyser
 import Data.FieldML.Level1Structure
+import Control.Applicative
 import Control.Monad
 import Data.Maybe
 import Data.List
@@ -17,10 +18,12 @@ import qualified Data.ByteString.Lazy as LBS
        Case { TokCase $$ }
        Class { TokClass $$ }
        Clone { TokClone $$ }
+       Closed { TokClosed $$ }
        Colon { TokColon $$ }
        Connect { TokConnect $$ }
        Dimensionless { TokDimensionless $$ }
        Domain { TokDomain $$ }
+       DomainList { TokDomainList $$ }
        Ensemble { TokEnsemble $$ }
        FCase { TokFCase $$ }
        From { TokFrom $$ }
@@ -36,7 +39,6 @@ import qualified Data.ByteString.Lazy as LBS
        PathSep { TokPathSep $$ }
        RightArrow { TokRightArrow $$ }
        Subset { TokSubset $$ }
-       Underscore { TokUnderscore $$ }
        Unit { TokUnit $$ }
        Using { TokUsing $$ }
        Where { TokWhere $$ }
@@ -56,6 +58,7 @@ import qualified Data.ByteString.Lazy as LBS
        Slash { TokSlash $$ }
        ForwardSlash { TokForwardSlash $$ }
        Tilde { TokTilde $$ }
+       Underscore { TokUnderscore $$ }
        Int { TokInt $$ }
        NamedSymbol { TokNamedSymbol $$ }
        Real { TokReal $$ }
@@ -200,9 +203,17 @@ domainDefinition : Clone domainExpression { L1CloneDomain (alexPosToSrcPoint $1)
                  | startBlock(Connect) domainExpression Using expression closeBlock { L1ConnectDomain (twoPosToSpan $1 $5) $2 $4 }
                  | domainExpression { L1DomainDefDomainType (l1DomainExpressionSS $1) $1 }
 
+classExpression : relOrAbsPath {
+    L1ClassExpressionReference ((\(L1RelOrAbsPath ss _ _) -> ss) $1) $1
+  } | startBlock(OpenBracket) Underscore Pipe labelledDomains(Pipe) CloseBracket closeBlock {
+    L1ClassExpressionOpenDisjointUnion (twoPosToSpan $1 $6) $4
+  } | startBlock(DomainList) OpenBracket sepBy(classExpression,Comma) CloseBracket closeBlock {
+    L1ClassExpressionList (twoPosToSpan $1 $5) $3
+  }
+
 domainHeadMember : Unit unitExpression domainHeadUnit {% $3 $2 }
                     | Domain scopedId kindAnnotation { L1DHMScopedDomain $2 $3 }
-                    | Class relOrAbsPath OpenBracket sepBy(domainExpression,Comma) CloseBracket { L1DHMRelation $2 $4 }
+                    | Class classExpression OpenBracket sepBy(domainExpression,Comma) CloseBracket { L1DHMRelation $2 $4 }
                     | domainExpression Tilde domainExpression { L1DHMEquality $1 $3 }
 
 domainHeadUnit : Tilde unitExpression {
@@ -255,14 +266,15 @@ domainApplyArg :: { (L1ScopedID, Either L1DomainExpression L1UnitExpression) }
 bracketDomainExpression : {- empty -} { \ex _ -> return ex } -- Just a bracketed expression.
                         | Colon domainExpression Pipe labelledDomains(Pipe) {\shouldBeLabel ss ->
                             -- We parse the more general case and fail if it doesn't make sense...
-                            let (L1LabelledDomains lTail) = $4 in
+                            let L1LabelledDomains lTail = $4 in
                               case shouldBeLabel of
                                 (L1DomainReference _ label) -> return $
-                                   L1DomainExpressionDisjointUnion ss (L1LabelledDomains ((label, $2):lTail))
+                                   L1DomainExpressionDisjointUnion ss
+                                         (L1LabelledDomains ((label, $2):lTail))
                                 _ -> happyError (TokColon $1)
                           }
                         | Pipe labelledDomains(Pipe) {\shouldBeLabel ss ->
-                            let (L1LabelledDomains lTail) = $2 in
+                            let L1LabelledDomains lTail = $2 in
                               case shouldBeLabel of
                                 (L1DomainReference _ label) -> return $
                                    L1DomainExpressionDisjointUnion ss (L1LabelledDomains ((label, shouldBeLabel):lTail))
@@ -325,11 +337,17 @@ expression
       let ss = twoPosToSpan (alexPosToSrcPoint $1) (l1ExSS $4)
         in foldl' (\ex sv -> L1ExLambda ss sv ex) $4 $2
     }
-  | startBlock(Case) expression Of many(expressionCase) closeBlock {
-      L1ExCase (twoPosToSpan $1 $5) $2 $4
+  | startBlock(Case) expression possibleClosed Of many(expressionCase) closeBlock {% do
+      let ss = (twoPosToSpan $1 $6)
+      caseContents <- if $3 then liftM Left (mapM (patternToClosedUnionMember ss) $5)
+                            else return (Right $5)
+      return $ L1ExCase (twoPosToSpan $1 $6) $2 caseContents
     }
-  | startBlock(FCase) many(expressionCase) closeBlock {
-      L1ExFCase (twoPosToSpan $1 $3) $2
+  | startBlock(FCase) possibleClosed many(expressionCase) closeBlock {% do
+      let ss = (twoPosToSpan $1 $4)
+      caseContents <- if $2 then liftM Left (mapM (patternToClosedUnionMember ss) $3)
+                            else return (Right $3)
+      return $ L1ExFCase (twoPosToSpan $1 $4) $2 caseContents
     }
   | String {
       L1ExString (alexPosToSrcPoint $ fst $1) (snd $1)
@@ -337,6 +355,10 @@ expression
   | expression PathSep domainExpression %prec expressionSig {
       L1ExSignature (twoPosToSpan (l1ExSS $1) (l1DomainExpressionSS $3)) $1 $3
     }
+
+possibleClosed :: { Bool }
+possibleClosed : {- empty -} { False }
+               | Closed { True }
 
 pattern :: { L1Pattern }
         : Underscore { L1PatternIgnore (alexPosToSrcPoint $1) }
@@ -417,4 +439,11 @@ alexPosToSrcPoint (AlexPn fn _ row col) = SrcSpan { srcFile = fn,
                                                     srcEndRow = row,
                                                     srcEndColumn = col
   }
+                                          
+patternToClosedUnionMember :: Monad m => SrcSpan -> (L1Pattern, L1Expression) -> m (L1RelOrAbsPathPossiblyIntEnd,
+                                                                                    L1Expression)
+patternToClosedUnionMember ss (L1PatternAs ssP label (L1PatternBind ssB scopedId), ex) =
+  return (label, L1ExLambda ssP (L1PatternBind ssB scopedId) ex)
+patternToClosedUnionMember ss _ =
+  fail ("Case with closed keyword can only contain members in the form \"label as _bvar\", at " ++ show ss)
 }

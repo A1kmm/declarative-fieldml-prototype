@@ -42,9 +42,11 @@ tokens :-
   case { returnP TokCase }
   class { returnP TokClass }
   clone { returnP TokClone }
+  closed { returnP TokClosed }
   connect { returnP TokConnect }
   dimensionless { returnP TokDimensionless }
   domain { returnP TokDomain }
+  domainlist { returnP TokDomainList }
   ensemble { returnP TokEnsemble }
   fcase { returnP TokFCase }
   from { returnP TokFrom }
@@ -283,9 +285,11 @@ data Token = -- Straight keywords and multi-char symbols
              TokCase AlexPosn |
              TokClass AlexPosn |
              TokClone AlexPosn |
+             TokClosed AlexPosn |
              TokConnect AlexPosn |
              TokDimensionless AlexPosn |
              TokDomain AlexPosn |
+             TokDomainList AlexPosn |
              TokEnsemble AlexPosn |
              TokFCase AlexPosn |
              TokFrom AlexPosn |

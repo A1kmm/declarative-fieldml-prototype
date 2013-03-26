@@ -127,6 +127,12 @@ data L2Expression = L2ExApply { l2ExSS :: SrcSpan, l2ExOp :: L2Expression, l2ExA
                                       l2ExUnits :: L2UnitExpression, l2ExRealValue :: Double } |
                     L2ExMkProduct { l2ExSS :: SrcSpan, l2ExValues :: [(L2Label, L2Expression)] } |
                     L2ExMkUnion { l2ExSS :: SrcSpan, l2ExLabel :: L2Label, l2ExValue :: L2Expression } |
+                    L2ExUnmkUnion { l2ExSS :: SrcSpan,
+                                    l2ExLabel :: L2Label,
+                                    l2ExValue :: L2Expression } |
+                    L2ExIsLabel { l2ExSS :: SrcSpan,
+                                  l2ExLabel :: L2Label,
+                                  l2ExValue :: L2Expression } |
                     L2ExProject { l2ExSS :: SrcSpan, l2ExLabel :: L2Label } |
                     L2ExAppend { l2ExSS :: SrcSpan, l2ExLabel :: L2Label } |
                     L2ExLambda { l2ExSS :: SrcSpan, l2ExBvar :: L2ScopedValueID,
@@ -152,6 +158,14 @@ data L2UnitExpression = L2UnitExDimensionless { l2UnitExSS :: SrcSpan } |
                         L2UnitScopedVar { l2UnitExSS :: SrcSpan, l2UnitExScoped :: L2ScopedUnitID }
                       deriving (Eq, Ord, Show, Data, Typeable)
 
+
+data L2ClassExpression = L2ClassExpressionReference { l2ClassExSS :: SrcSpan,
+                                                      l2ClassExClassID :: L2ClassID } |
+                         L2ClassExpressionOpenDisjointUnion { l2ClassExSS :: SrcSpan,
+                                                              l2ClassExUnion :: L2LabelledDomains } |
+                         L2ClassExpressionList { l2ClassExSS :: SrcSpan,
+                                                 l2ClassExEx :: [L2ClassExpression] }
+                      deriving (Eq, Ord, Show, Data, Typeable)
 
 data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: SrcSpan,
                                                       l2DomainExpressionLabels :: L2LabelledDomains } |
@@ -187,7 +201,7 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
                             l2DomainExpressionScopedUnits :: [L2ScopedUnitID],
                             l2DomainExpressionUnitConstraints :: [(L2UnitExpression, L2UnitExpression)],
                             l2DomainExpressionDomainEqualities :: [(L2DomainExpression, L2DomainExpression)],
-                            l2DomainExpressionDomainRelations :: [(L2ClassID, [L2DomainExpression])],
+                            l2DomainExpressionDomainRelations :: [(L2ClassExpression, [L2DomainExpression])],
                             l2DomainExpressionExpression :: L2DomainExpression
                             }
                           deriving (Eq, Ord, Show, Data, Typeable)
