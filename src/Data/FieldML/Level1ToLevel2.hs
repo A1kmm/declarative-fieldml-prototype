@@ -1257,41 +1257,6 @@ translateDomainDefinition scope _ nsid
   (L1.L1DomainDefDomainType ss dt) =
     translateDomainExpression scope ss nsid dt
 
-{-
--- | Translates an L1DomainType to an L2DomainType.
-translateDomainType :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1DomainExpression -> ModelTranslation L2.L2DomainExpression
-translateDomainType scope _ nsid (L1.L1DomainType ss dcrs expr) = do
-  (unitConstraints, domainEqualities, domainRelations) <-
-    foldM (\(unitConstraints, domainEqualities, domainRelations) dcr ->
-            case dcr of
-              L1.L1DCRUnitConstraint expr1 expr2 ->
-                (,,)
-                  <$> ((:unitConstraints) <$>
-                       ((,) <$> translateUnitExpression scope ss nsid expr1
-                            <*> translateUnitExpression scope ss nsid expr2))
-                  <*> pure domainEqualities
-                  <*> pure domainRelations
-              L1.L1DCREquality expr1 expr2 ->
-                (,,) unitConstraints
-                  <$> ((:domainEqualities) <$>
-                       ((,) <$> translateDomainExpression scope ss nsid expr1
-                            <*> translateDomainExpression scope ss nsid expr2))
-                  <*> pure domainRelations
-              L1.L1DCRRelation cls args ->
-                (,,) unitConstraints domainEqualities
-                  <$> ((:domainRelations) <$>
-                       ((,) <$> findScopedSymbolByRAPath ss nsid cls
-                                   (\nsc className -> M.lookup (L1.l1IdBS className)
-                                                          (L2.l2nsClasses nsc))
-                            <*> mapM (translateDomainExpression scope ss nsid)
-                                     args
-                       )
-                      )
-          ) ([], [], []) dcrs
-  L2.L2DomainType ss unitConstraints domainEqualities domainRelations
-    <$> translateDomainExpression scope ss nsid expr
--}
-
 -- | Attempts to globally replace all temporary aliases for types with their
 --   true values, or fails with an error for the user if a cycle is found.
 fixAliasReferences :: L2.L2NamespaceID -> ModelTranslation ()
