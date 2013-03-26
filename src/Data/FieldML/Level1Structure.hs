@@ -84,7 +84,7 @@ data L1Pattern =
               } |
   L1PatternProduct {
     l1PatternSS :: SrcSpan,
-    l1PatternProductArgs :: [(L1Identifier, L1Pattern)]
+    l1PatternProductArgs :: [(L1RelOrAbsPathPossiblyIntEnd, L1Pattern)]
                    } deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1DomainDefinition = L1CloneDomain { l1DomainDefSS :: SrcSpan, l1DomainDefType :: L1DomainExpression } |

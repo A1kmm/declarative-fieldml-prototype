@@ -350,8 +350,8 @@ pattern :: { L1Pattern }
         | startBlock(OpenProductBracket) sepBy1(patternProductArg,Comma) CloseProductBracket closeBlock {
           L1PatternProduct (twoPosToSpan $1 $4) $2
           }
-patternProductArg :: { (L1Identifier, L1Pattern) }
-                  : identifier Colon pattern { ($1, $3) }
+patternProductArg :: { (L1RelOrAbsPathPossiblyIntEnd, L1Pattern) }
+                  : relOrAbsPathPossiblyIntEnd Colon pattern { ($1, $3) }
 
 expressionCase : startBlockPattern RightArrow expression closeBlock {
     ($1, $3)
