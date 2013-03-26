@@ -173,6 +173,10 @@ data L1Expression = L1ExApply { l1ExSS :: SrcSpan,
                     L1ExMkUnion { l1ExSS :: SrcSpan,
                                   l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
                                   l1ExValue :: L1Expression } |
+                    L1ExUnmkUnion { l1ExSS :: SrcSpan, | -- Note: No explicit syntax, but created by desugarer.
+                                    l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd,
+                                    l1ExValue :: L1Expression
+                                  } |
                     L1ExProject { l1ExSS :: SrcSpan,
                                   l1ExLabel :: L1RelOrAbsPathPossiblyIntEnd } |
                     L1ExAppend { l1ExSS :: SrcSpan,

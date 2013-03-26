@@ -170,6 +170,9 @@ makeErrorExpression v = (L1.L1ExApply ss
                          (L1.L1ExString ss v)
                         )
 
+desugarConst :: L1.L1Expression -> State DesugarTmp L1.L1Expression
+desugarConst ex = L1.L1ExLambda ss <$> (L1.L1ExBoundVariable ss <$> (L1.L1ScopedID <$> desugarTmpName)) <*> (pure ex)
+
 desugarL1Patterns :: L1.L1Expression -> State DesugarTmp L1.L1Expression
 desugarL1Patterns ex@(L1.L1ExCase ss expr values) =
     -- We sequentially test each value for a match, and if they match, we then go ahead and try to extract the contents.
@@ -179,10 +182,11 @@ desugarL1Patterns ex@(L1.L1ExCase ss expr values) =
         <$> (testPatternUsing ss expr pat)
         <*> (
               (\x y -> [x, y])
-               <$> ((,) (L1.L1PatternAs ss (pathGlobal "true") L1.L1PatternIgnore) <$> patternToExtractLambdas expr pat ifEx)
-               <*> (pure (L1.L1ExLambda ss svar (L1.L1PatternAs ss (pathGlobal "false") L1.L1PatternIgnore, otherwiseEx)))
+               <$> ((,) (L1.L1PatternAs ss (pathGlobal "true") L1.L1PatternIgnore) <$>
+                    (desugarConst =<< patternToExtractLambdas expr pat ifEx))
+               <*> (L1.L1PatternAs ss (pathGlobal "false") L1.L1PatternIgnore, desugarConst otherwiseEx)
             )
-    foldr addPatternToCase (makeErrorExpression $ "Nothing matched pattern at " <> (BSC.pack . show $ ss))  values
+    foldM addPatternToCase (makeErrorExpression $ "Nothing matched pattern at " <> (BSC.pack . show $ ss)) (reverse values)
   return ()
 desugarL1Patterns ex = ex
 
@@ -207,17 +211,13 @@ testPatternUsing testEx (L1.L1PatternProduct ss args) =
          ) <$> (testProductPart (last args)) <*> (pure . init $ args)
 
 patternToExtractLambdas :: L1.L1Expression -> L1.L1Pattern -> L1.L1Expression -> State DesugarTmp L1.L1Expression
-patternToExtractLambdas testEx (L1.L1PatternIgnore ss) ifEx = do
-  lambdaScoped <- L1.L1ScopedID ss <$> desugarTmpName
-  return $ L1.L1ExLambda ss (L1.L1PatternBind ss lambdaScoped) ifEx
-patternToExtractLambdas testEx (L1.L1PatternBind ss svar) ifEx = return $ L1.L1ExLambda ss (L1.L1PatternBind ss svar) ifEx
-patternToExtractLambdas testEx (L1.L1PatternAs ss label pattern) ifEx = do
-  lambdaScoped <- L1.L1ScopedID ss <$> desugarTmpName
-  subLambda <- patternToExtractLambdas testEx pattern ifEx
-  return $ 
-    L1.L1ExLambda ss (L1.L1PatternBind ss subLambda) $ subLambda
-    (L1.L1ExCase ss (L1.L1ExBoundVariable ss lambdaScoped)
-                        [(L1.L1PatternAs ss label (L1.L1PatternIgnore ss), ifEx)])
+patternToExtractLambdas testEx (L1.L1PatternIgnore ss) ifEx = pure ifEx
+patternToExtractLambdas testEx (L1.L1PatternBind ss svar) ifEx =
+  return $ L1.L1ExApply ss (L1.L1ExLambda ss (L1.L1PatternBind ss svar) ifEx) testEx
+patternToExtractLambdas testEx (L1.L1PatternAs ss label pattern) ifEx =
+  patternToExtractLambdas (L1.L1ExUnmkUnion ss label testEx) pattern ifEx
+patternToExtractLambdas testEx (L1.L1PatternProduct ss args) ifEx =
+  undefined -- TODO
 
 -- | The ModelTranslation monad carries all state and reader information needed to
 --   translate a L1 model into a L2 model.
