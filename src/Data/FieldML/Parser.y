@@ -207,8 +207,8 @@ classExpression : relOrAbsPath {
     L1ClassExpressionReference ((\(L1RelOrAbsPath ss _ _) -> ss) $1) $1
   } | startBlock(OpenBracket) Underscore Pipe labelledDomains(Pipe) CloseBracket closeBlock {
     L1ClassExpressionOpenDisjointUnion (twoPosToSpan $1 $6) $4
-  } | startBlock(DomainList) OpenBracket sepBy(classExpression,Comma) CloseBracket closeBlock {
-    L1ClassExpressionList (twoPosToSpan $1 $5) $3
+  } | DomainList OpenBracket sepBy(classExpression,Comma) CloseBracket {
+    L1ClassExpressionList (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $4)) $3
   }
 
 domainHeadMember : Unit unitExpression domainHeadUnit {% $3 $2 }
@@ -221,7 +221,8 @@ domainHeadUnit : Tilde unitExpression {
     } | {- empty -} {
         \uex -> case uex of
                    L1UnitScopedVar _ sv -> return (L1DHMScopedUnit sv)
-                   _ -> fail $ "Malformed domain head unit; expected either "
+                   _ -> fail $ "Malformed domain head unit; expected either a unit equation or a unit ID at " ++
+                               (show (l1UnitExSS uex))
     }
 
 domainExpression
@@ -369,8 +370,8 @@ pattern :: { L1Pattern }
         | relOrAbsPathPossiblyIntEnd {
           L1PatternAs (l1RelOrAbsPIESS $1) $1 (L1PatternIgnore (l1RelOrAbsPIESS $1))
           }
-        | startBlock(OpenProductBracket) sepBy1(patternProductArg,Comma) CloseProductBracket closeBlock {
-          L1PatternProduct (twoPosToSpan $1 $4) $2
+        | OpenProductBracket sepBy1(patternProductArg,Comma) CloseProductBracket {
+          L1PatternProduct (twoPosToSpan (alexPosToSrcPoint $1) (alexPosToSrcPoint $3)) $2
           }
 patternProductArg :: { (L1RelOrAbsPathPossiblyIntEnd, L1Pattern) }
                   : relOrAbsPathPossiblyIntEnd Colon pattern { ($1, $3) }

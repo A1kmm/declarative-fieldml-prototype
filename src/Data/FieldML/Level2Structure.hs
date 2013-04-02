@@ -22,7 +22,7 @@ instance Eq L2ScopedUnitID where
   (L2ScopedUnitID _ v1) == (L2ScopedUnitID _ v2) = v1 == v2
 instance Ord L2ScopedUnitID where
   (L2ScopedUnitID _ v1) `compare` (L2ScopedUnitID _ v2) = v1 `compare` v2
-data L2ScopedDomainID = L2ScopedDomainID BS.ByteString Int deriving (Data, Typeable, Show)
+data L2ScopedDomainID = L2ScopedDomainID { l2SDIDName :: BS.ByteString, l2SDIdent :: Int } deriving (Data, Typeable, Show)
 instance Eq L2ScopedDomainID where
   (L2ScopedDomainID _ v1) == (L2ScopedDomainID _ v2) = v1 == v2
 instance Ord L2ScopedDomainID where

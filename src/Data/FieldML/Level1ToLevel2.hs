@@ -296,7 +296,7 @@ data ScopeInformation = ScopeInformation {
   siValueIDMap  :: M.Map L1.L1ScopedID L2.L2ScopedValueID,
   siUnitIDMap   :: M.Map L1.L1ScopedID L2.L2ScopedUnitID,
   siDomainIDMap :: M.Map L1.L1ScopedID L2.L2ScopedDomainID
-  }
+  } deriving (Eq, Ord, Show)
 instance Default ScopeInformation where
   def = ScopeInformation M.empty M.empty M.empty
 
@@ -367,7 +367,7 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
           L2.l2nsNamedValues = M.insert nvname newValueID (L2.l2nsNamedValues l2nsc)
           }
       L1.L1NSClass { L1.l1nsSS = nsss, L1.l1nsClassName = L1.L1Identifier _ clname, L1.l1nsClassDomainFunctions = dfs, 
-                     L1.l1nsClassValues = cvs } -> do
+                     L1.l1nsClassValues = cvs, L1.l1nsClassParameters = p } -> do
         l2dfs <- forM dfs $ \(L1.L1Identifier dfss dfname, n) -> do
           newDFID <- L2.l2NextDomainFunctionID <$> getL2Model
           modifyL2Model $ \mod -> mod {
@@ -387,9 +387,20 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
                                       }
           return (cvname, newCVID)
         newClassID <- L2.l2NextClassID <$> getL2Model
+        l2p <- mapM (\(L1.L1ScopedID { L1.l1ScopedIdBS = sdName }, k) ->
+                       (,)
+                         <$> (do
+                                 newSDID <- L2.l2NextScopedDomainID <$> getL2Model
+                                 modifyL2Model $ \mod -> mod {
+                                   L2.l2NextScopedDomainID =
+                                      (\(L2.L2ScopedDomainID _ i) -> L2.L2ScopedDomainID "unnamed!" (i + 1))
+                                      newSDID
+                                                             }
+                                 return (newSDID { L2.l2SDIDName = sdName })
+                             ) <*> pure k) p
         modifyL2Model $ \mod -> mod {
           L2.l2NextClassID = (\(L2.L2ClassID i) -> L2.L2ClassID (i + 1)) newClassID,
-          L2.l2AllClasses = M.insert newClassID (L2.L2ClassContents nsss [] (M.fromList l2dfs) (M.fromList l2cvs))
+          L2.l2AllClasses = M.insert newClassID (L2.L2ClassContents nsss l2p (M.fromList l2dfs) (M.fromList l2cvs))
                                      (L2.l2AllClasses mod)
           }
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
@@ -767,8 +778,12 @@ recursivelyImportExternalClass =
     \foreignMod foreignURL foreignClassID -> do
       newClassID <- L2.l2NextClassID <$> getL2Model
       let Just (L2.L2ClassContents ss p df vals) = M.lookup foreignClassID . L2.l2AllClasses $ foreignMod
-      localClassContents <- L2.L2ClassContents ss p
-                              <$> T.mapM (\dfid ->
+      localClassContents <- L2.L2ClassContents ss 
+                              <$> (mapM (\(sdid, k) ->
+                                          (,) <$>
+                                          recursivelyImportExternalScopedDomain foreignMod foreignURL sdid 
+                                          <*> pure k) p)
+                              <*> T.mapM (\dfid ->
                                            recursivelyImportExternalDomainFunction foreignMod
                                                                                    foreignURL dfid) df
                               <*> T.mapM (\valueId ->
@@ -919,13 +934,15 @@ translateNSContents scope thisNSID nsc =
           L2.l2AllValues = M.insert valueID (L2.L2ValueContents ss l2t) (L2.l2AllValues mod)
           }
       L1.L1NSClass { L1.l1nsSS = ss, L1.l1nsClassName = L1.L1Identifier _ n,
+                     L1.l1nsClassParameters = p,
                      L1.l1nsClassDomainFunctions = df, L1.l1nsClassValues = cvs } -> do
-        -- The only thing that needs to change from the skeleton is the ClassValueContents...
         Just classID <- M.lookup n . L2.l2nsClasses <$> getNamespaceContents thisNSID
         Just classContents <- (M.lookup classID . L2.l2AllClasses) <$> getL2Model
+        let scope' = scope { siDomainIDMap = foldl' (\m ((l1id, _), (l2id, _)) ->
+                                                      M.insert l1id l2id m) (siDomainIDMap scope) (zip p (L2.l2ClassParameters classContents))}
         forM_ cvs $ \(L1.L1Identifier cvss cvName, cvtype) -> do
           let Just cvID = M.lookup cvName (L2.l2ClassValues classContents)
-          l2cvtype <- translateDomainExpression scope ss thisNSID cvtype
+          l2cvtype <- translateDomainExpression scope' ss thisNSID cvtype
           modifyL2Model $ \mod -> mod {
             L2.l2AllClassValues = M.insert cvID (L2.L2ClassValueContents cvss l2cvtype)
                                                 (L2.l2AllClassValues mod)
@@ -1123,16 +1140,24 @@ translateUnitDefinition scope _ nsid (L1.L1UnitDefUnitExpr ss expr) =
 
 -- | Translates an L1DomainExpression to an L2DomainExpression
 translateDomainExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1DomainExpression -> ModelTranslation L2.L2DomainExpression
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionProduct ss labels) =
-  L2.L2DomainExpressionProduct ss <$>  translateLabelledDomains scope ss nsid labels
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionDisjointUnion ss labels) =
-  L2.L2DomainExpressionDisjointUnion ss <$>  translateLabelledDomains scope ss nsid labels
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionFieldSignature ss dom cod) =
-  L2.L2DomainExpressionFieldSignature ss <$> translateDomainExpression scope ss nsid dom
-                                         <*> translateDomainExpression scope ss nsid cod
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionReal ss units) =
-  L2.L2DomainExpressionReal ss <$> translateUnitExpression scope ss nsid units
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionApply ss args value) = do
+translateDomainExpression scope ss nsid ex = fst <$> translateDomainExpressionCrossScope scope ss nsid ex
+
+-- | Translates an L1DomainExpression to an L2DomainExpression, and also returns the scope inside the outermost
+--   domain expression.
+translateDomainExpressionCrossScope :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1DomainExpression -> ModelTranslation (L2.L2DomainExpression, ScopeInformation)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionProduct ss labels) =
+  (,) <$> (L2.L2DomainExpressionProduct ss <$>  translateLabelledDomains scope ss nsid labels) <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionDisjointUnion ss labels) =
+  (,) <$> (L2.L2DomainExpressionDisjointUnion ss <$>  translateLabelledDomains scope ss nsid labels)
+      <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionFieldSignature ss dom cod) =
+  (,) <$> (L2.L2DomainExpressionFieldSignature ss <$> translateDomainExpression scope ss nsid dom
+                                                  <*> translateDomainExpression scope ss nsid cod
+          ) <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionReal ss units) =
+  (,) <$> (L2.L2DomainExpressionReal ss <$> translateUnitExpression scope ss nsid units)
+      <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionApply ss args value) = do
   let processOneArg (domArgs, unitArgs) (L1.L1ScopedID _ sdName, Left dex) = do
         domArg <- ((,) (L2.L2ScopedDomainID sdName 0)) <$>
                     translateDomainExpression scope ss nsid dex
@@ -1141,33 +1166,37 @@ translateDomainExpression scope _ nsid (L1.L1DomainExpressionApply ss args value
         unitArg <- (,) (L2.L2ScopedUnitID sdName 0)  <$> translateUnitExpression scope ss nsid uex
         return (domArgs, unitArg : unitArgs)
   (domArgs, unitArg : unitArgs) <- foldM processOneArg ([], []) args
-  L2.L2DomainExpressionApply ss domArgs unitArgs <$> translateDomainExpression scope ss nsid value
-translateDomainExpression scope _ nsid (L1.L1DomainFunctionEvaluate ss func args) =
-  L2.L2DomainFunctionEvaluate ss
-    <$> findScopedSymbolByRAPath ss nsid func
-          (\nsc dfName ->
-              M.lookup (L1.l1IdBS dfName) (L2.l2nsDomainFunctions nsc)
-          )
-    <*> mapM (translateDomainExpression scope ss nsid) args
-translateDomainExpression scope _ nsid (L1.L1DomainVariableRef ss sdName) =
+  (,)
+    <$> (L2.L2DomainExpressionApply ss domArgs unitArgs <$> translateDomainExpression scope ss nsid value)
+    <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainFunctionEvaluate ss func args) =
+  (,) <$>
+    (L2.L2DomainFunctionEvaluate ss
+      <$> findScopedSymbolByRAPath ss nsid func
+            (\nsc dfName ->
+                M.lookup (L1.l1IdBS dfName) (L2.l2nsDomainFunctions nsc)
+            )
+      <*> mapM (translateDomainExpression scope ss nsid) args
+    ) <*> (pure scope)
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainVariableRef ss sdName) =
   case (M.lookup sdName . siDomainIDMap) scope of
     Nothing ->
       fail ("Cannot find scoped domain variable " ++ BSC.unpack (L1.l1ScopedIdBS sdName) ++ " referenced at " ++
-            show ss)
+            show ss ++ " in scope " ++ show scope)
     Just scopedDomain ->
-      return $ L2.L2DomainVariableRef ss scopedDomain
+      return $ (L2.L2DomainVariableRef ss scopedDomain, scope)
 
-translateDomainExpression scope _ nsid (L1.L1DomainReference ss (rapi@L1.L1RelOrAbsPathInt{})) =
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainReference ss (rapi@L1.L1RelOrAbsPathInt{})) =
   fail $ "Attempt to use a label ending in an integer as a domain name, which is invalid, at " ++ (show ss)
-  
-translateDomainExpression scope _ nsid (L1.L1DomainReference ss (L1.L1RelOrAbsPathNoInt _ isabs rp)) = do
+
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainReference ss (L1.L1RelOrAbsPathNoInt _ isabs rp)) = do
   domainType <-
     findScopedSymbolByRAPath ss nsid (L1.L1RelOrAbsPath ss isabs rp) $
       \nsc domainName ->
          M.lookup (L1.l1IdBS domainName) (L2.l2nsDomains nsc)
-  return domainType
+  return (domainType, scope)
 
-translateDomainExpression scope _ nsid (L1.L1DomainExpressionLambda ss dh dexpr) = do
+translateDomainExpressionCrossScope scope _ nsid (L1.L1DomainExpressionLambda ss dh dexpr) = do
   let processDomainHeadMember (scope, sd, su) (L1.L1DHMScopedDomain name kind) = do
         sdid <- setScopedDomainName (L1.l1ScopedIdBS name) . L2.l2NextScopedDomainID <$> getL2Model
         modifyL2Model $ \mod -> mod {
@@ -1199,7 +1228,7 @@ translateDomainExpression scope _ nsid (L1.L1DomainExpressionLambda ss dh dexpr)
   (uConstrs, dEqs, dRels) <-
     foldM processDomainHeadMember' ([], [], []) dh
   dexpr2 <- translateDomainExpression scope' ss nsid dexpr
-  return $ L2.L2DomainExpressionLambda ss scopedDomains scopedUnits uConstrs dEqs dRels dexpr2
+  return $ (L2.L2DomainExpressionLambda ss scopedDomains scopedUnits uConstrs dEqs dRels dexpr2, scope')
 
 -- | Translates an L1ClassExpression into an L2ClassExpression
 translateClassExpression :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID -> L1.L1ClassExpression -> ModelTranslation L2.L2ClassExpression
@@ -1225,13 +1254,13 @@ translateLabelledDomains scope ss nsid (L1.L1LabelledDomains ls) =
 
 -- | Produces a L2DomainType linking to a new L2ClonelikeDomainContents.
 makeClonelikeDomain :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID ->
-                       L1.L1DomainExpression -> L2.L2DomainCloneType ->
+                       L1.L1DomainExpression -> (ScopeInformation -> ModelTranslation L2.L2DomainCloneType) ->
                        ModelTranslation L2.L2DomainExpression
 makeClonelikeDomain scope ss nsid dt ct = do
   domID <- L2.l2NextDomain <$> getL2Model
-  cldc <- L2.L2ClonelikeDomainContents ss
-              <$> translateDomainExpression scope ss nsid dt
-              <*> (pure ct)
+  (domEx, scope') <- translateDomainExpressionCrossScope scope ss nsid dt
+  cldc <- L2.L2ClonelikeDomainContents ss domEx
+              <$> (ct scope')
   modifyL2Model $ \mod -> mod {
       L2.l2NextDomain = (\(L2.L2DomainID n) -> L2.L2DomainID (n + 1)) domID,
       L2.l2AllDomains = M.insert domID cldc (L2.l2AllDomains mod)
@@ -1244,15 +1273,14 @@ translateDomainDefinition :: ScopeInformation -> L1.SrcSpan -> L2.L2NamespaceID 
                              L1.L1DomainDefinition -> ModelTranslation L2.L2DomainExpression
 translateDomainDefinition scope _ nsid
   (L1.L1CloneDomain ss dt) =
-    makeClonelikeDomain scope ss nsid dt L2.L2DomainClone
-translateDomainDefinition scope _ nsid
-  (L1.L1SubsetDomain ss dt ex) =
+    makeClonelikeDomain scope ss nsid dt (const . return $ L2.L2DomainClone)
+translateDomainDefinition scope _ nsid (L1.L1SubsetDomain ss dt ex) =
     makeClonelikeDomain scope ss nsid dt
-      =<< (L2.L2DomainSubset <$> (translateExpression scope ss nsid ex))
+      (\scope' -> L2.L2DomainSubset <$> (translateExpression scope' ss nsid ex))
 translateDomainDefinition scope _ nsid
   (L1.L1ConnectDomain ss dt ex) =
     makeClonelikeDomain scope ss nsid dt
-      =<< (L2.L2DomainConnect <$> (translateExpression scope ss nsid ex))
+      (\scope' -> L2.L2DomainConnect <$> (translateExpression scope' ss nsid ex))
 translateDomainDefinition scope _ nsid
   (L1.L1DomainDefDomainType ss dt) =
     translateDomainExpression scope ss nsid dt
