@@ -9,7 +9,7 @@ import Data.Data
 
 type Identifier = BS.ByteString
 type SrcSpan = L1.SrcSpan
-type L2Kind = L1.L1Kind
+type Kind = L1.Kind
 
 newtype L2NamespaceID = L2NamespaceID Int deriving (Eq, Ord, Data, Typeable, Show)
 newtype L2DomainID = L2DomainID Int deriving (Eq, Ord, Data, Typeable, Show)
@@ -103,7 +103,7 @@ data L2BaseUnitContents = L2BaseUnitContents SrcSpan deriving (Eq, Ord, Show, Da
 
 data L2ClassContents = L2ClassContents {
   l2ClassSS :: SrcSpan,
-  l2ClassParameters :: [(L2ScopedDomainID, L2Kind)],
+  l2ClassParameters :: [(L2ScopedDomainID, Kind)],
   l2ClassDomainFunctions :: M.Map Identifier L2DomainFunctionID,
   l2ClassValues :: M.Map Identifier L2ClassValueID
   }
@@ -197,7 +197,7 @@ data L2DomainExpression = L2DomainExpressionProduct { l2DomainExpressionSS :: Sr
                             l2DomainExpressionValue :: L2DomainExpression } |
                           L2DomainExpressionLambda {
                             l2DomainExpressionSS :: SrcSpan,
-                            l2DomainExpressionScopedDomains :: [(L2ScopedDomainID, L2Kind)],
+                            l2DomainExpressionScopedDomains :: [(L2ScopedDomainID, Kind)],
                             l2DomainExpressionScopedUnits :: [L2ScopedUnitID],
                             l2DomainExpressionUnitConstraints :: [(L2UnitExpression, L2UnitExpression)],
                             l2DomainExpressionDomainEqualities :: [(L2DomainExpression, L2DomainExpression)],

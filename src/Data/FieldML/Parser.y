@@ -119,17 +119,17 @@ namespaceStatement
     }
 
 classParameters : OpenBracket sepBy(classParameter,Comma) CloseBracket { $2 }
-classParameter :: { (L1ScopedID, L1Kind) } : scopedId maybe(kindAnnotation) { ($1, fromMaybe (L1Kind [] []) $2) }
+classParameter :: { (L1ScopedID, Kind) } : scopedId maybe(kindAnnotation) { ($1, fromMaybe (Kind [] []) $2) }
 
 kindAnnotation
-  :: { L1Kind }
+  :: { Kind }
   : PathSep OpenBracket kindSpec CloseBracket { $3 }
 kindSpec
-  :: { L1Kind }
-  : maybe(kindDomainList) maybe(kindUnitList) { L1Kind (fromMaybe [] $1) (fromMaybe [] $2) }
-kindDomainList :: { [(L1ScopedID, L1Kind)] } : Domain sepBy1(kindDomain, Comma) { $2 }
+  :: { Kind }
+  : maybe(kindDomainList) maybe(kindUnitList) { Kind (fromMaybe [] $1) (fromMaybe [] $2) }
+kindDomainList :: { [(L1ScopedID, Kind)] } : Domain sepBy1(kindDomain, Comma) { $2 }
 kindUnitList :: { [L1ScopedID] } : Unit sepBy1(scopedId,Comma) { $2 }
-kindDomain :: { (L1ScopedID, L1Kind) } : scopedId kindAnnotation { ($1, $2) }
+kindDomain :: { (L1ScopedID, Kind) } : scopedId kindAnnotation { ($1, $2) }
 
 classContents : Where classDomainFunctions classValues { ($2, $3) }
 classDomainFunctions : many(classDomainFunction) { $1 }

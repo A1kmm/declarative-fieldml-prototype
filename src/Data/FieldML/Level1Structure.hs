@@ -49,7 +49,7 @@ data L1NamespaceStatement =
                  } |
   L1NSClass { l1nsSS :: SrcSpan,
               l1nsClassName :: L1Identifier,
-              l1nsClassParameters :: [(L1ScopedID, L1Kind)],
+              l1nsClassParameters :: [(L1ScopedID, Kind)],
               l1nsClassDomainFunctions :: [(L1Identifier, Int)],
               l1nsClassValues :: [(L1Identifier, L1DomainExpression)]
             } |
@@ -67,10 +67,10 @@ data L1NamespaceStatement =
                }
   deriving (Eq, Ord, Show, Data, Typeable)
 
--- | One entry for each parameter, parameter is L1Kind [] if it doesn't itself have parameters.
-data L1Kind = L1Kind {
-    l1KindFreeDomains :: [(L1ScopedID, L1Kind)],
-    l1KindFreeUnits :: [L1ScopedID]
+-- | One entry for each parameter, parameter is Kind [] if it doesn't itself have parameters.
+data Kind = Kind {
+    kindFreeDomains :: [(L1ScopedID, Kind)],
+    kindFreeUnits :: [L1ScopedID]
   } deriving (Eq, Ord, Data, Typeable, Show)
 
 -- | A description of a pattern to match.
@@ -110,7 +110,7 @@ data L1ClassExpression = L1ClassExpressionReference { l1ClassExSS :: SrcSpan,
   deriving (Eq, Ord, Show, Data, Typeable)
 
 data L1DomainHeadMember =
-  L1DHMScopedDomain { l1DHMDomainName :: L1ScopedID, l1DHMDomainKind :: L1Kind } |
+  L1DHMScopedDomain { l1DHMDomainName :: L1ScopedID, l1DHMDomainKind :: Kind } |
   L1DHMScopedUnit { l1DHMDomainName :: L1ScopedID } |
   L1DHMUnitConstraint { l1DHMExpr1 :: L1UnitExpression,
                         l1DHMExpr2 :: L1UnitExpression } |
