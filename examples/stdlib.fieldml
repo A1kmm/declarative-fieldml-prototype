@@ -2,11 +2,13 @@
 # compile; it will be improved later.
 
 unit metre = newbase
-val <
+val < :: [domain _a :: ()] => _a -> _a -> Boolean
+let == < (\_x _y -> realCompare _x _y)
 val >
 val <=
 val >=
-val ==
+val realCompare
+# val ==
 val asclone
 val fromclone
 val const
