@@ -311,8 +311,8 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
       L1.L1NSNamespace { L1.l1nsSS = nsss, L1.l1nsNamespaceName = L1.L1Identifier _ nsname,
                          L1.l1nsNamespaceContents = newnsc } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
-        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents myNSID
-        Debug.Trace.trace ("Adding Label#" ++ show newLabel ++ " into " ++ show myNSID ++ " for " ++ (show nsname)) (return ())
+        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents "bsm nextLabel" myNSID
+        -- Debug.Trace.trace ("Adding Label#" ++ show newLabel ++ " into " ++ show myNSID ++ " for " ++ (show nsname)) (return ())
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
           L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc),
           L2.l2nsLabels = M.insert nsname (L2.L2Label myNSID (fromIntegral newLabel)) (L2.l2nsLabels l2nsc),
@@ -329,7 +329,7 @@ buildSkeletonModel ss nsc@(L1.L1NamespaceContents c) myNSID = do
                       L1.l1nsNamespaceContents = newnsc, 
                       L1.l1nsDomainDefinition = dd } -> do
         newNSID <- registerNewNamespace nsss myNSID newnsc
-        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents myNSID
+        newLabel <- L2.l2nsNextLabel <$> getNamespaceContents "bsm domain nextlabel" myNSID
         modifyNamespaceContents myNSID $ \l2nsc -> l2nsc {
           L2.l2nsNamespaces = M.insert nsname newNSID (L2.l2nsNamespaces l2nsc),
           L2.l2nsLabels = M.insert nsname (L2.L2Label myNSID (fromIntegral newLabel)) (L2.l2nsLabels l2nsc),
@@ -507,7 +507,8 @@ cacheWrapExternalImport getMap setMap f foreignMod foreignURL target = do
     Just localHit -> return localHit
     Nothing -> do
       r <- f foreignMod foreignURL target
-      put (setMap (M.insert (foreignURL, target) r (getMap st)) st)
+      st' <- get
+      put (setMap (M.insert (foreignURL, target) r (getMap st)) st')
       return r
 
 recursivelyImportExternalNSContents :: L2.L2Model -> L2.Identifier -> L2.L2NamespaceContents -> ModelTranslation L2.L2NamespaceContents
@@ -528,21 +529,31 @@ recursivelyImportExternalNS :: L2.L2Model -> L2.Identifier -> L2.L2NamespaceID -
 recursivelyImportExternalNS =
   cacheWrapExternalImport mtsForeignToLocalNS (\x m -> m {mtsForeignToLocalNS=x}) $
     \foreignMod foreignURL targetNS ->
-    if ((\(L2.L2NamespaceID n) -> n) targetNS) < reservedIDs && targetNS /= nsMain
+    if (((\(L2.L2NamespaceID n) -> n) targetNS) < reservedIDs) && targetNS /= nsMain
        -- Reserved IDs are a special case: We match on them numerically, and
        -- they are globally unique, so just re-use the same numerical ID. We exclude
-       -- nsMain, however, because that is actually 
+       -- nsMain, however, because that is actually a user-defined namespace.
     then return targetNS
     else
       do
         let foreignNSC = (L2.l2AllNamespaces foreignMod) ! targetNS
-        newNSC <- recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC
         newNSID <- L2.l2NextNamespace <$> getL2Model
         modifyL2Model $ \mod -> mod {
-          L2.l2NextNamespace = (\(L2.L2NamespaceID nid) -> L2.L2NamespaceID (nid + 1)) newNSID,
+          L2.l2NextNamespace = (\(L2.L2NamespaceID nid) -> L2.L2NamespaceID (nid + 1)) newNSID
+          }
+        -- The cache wrapper will eventually save the namespace, but recursivelyImportExternalNSContents
+        -- might need an answer before then to retrieve its parent namespace, so cache it now...
+        modify (\mts -> mts { mtsForeignToLocalNS = M.insert (foreignURL, targetNS)
+                                                             newNSID (mtsForeignToLocalNS mts) })
+        newNSC <- recursivelyImportExternalNSContents foreignMod foreignURL foreignNSC
+        modifyL2Model $ \mod -> mod {
           L2.l2AllNamespaces = M.insert newNSID
                                newNSC (L2.l2AllNamespaces mod)
           }
+        -- destURL <- (\(_,url,_) -> url) <$> ask
+        -- Debug.Trace.trace ("Imported namespace " ++ show targetNS ++ " from " ++ BSC.unpack foreignURL ++
+        --                    " into " ++ destURL ++
+        --                    " as " ++ show newNSID) $! return ()
         return newNSID
 
 recursivelyImportExternalUnitExpression :: L2.L2Model -> L2.Identifier -> L2.L2UnitExpression -> ModelTranslation L2.L2UnitExpression
@@ -813,7 +824,7 @@ recursivelyImportExternalDomainFunction =
 --   error such as a cycle or missing identifier is found.
 processInternalImports :: L2.L2NamespaceID -> ModelTranslation ()
 processInternalImports startFrom = do
-  allNS <- S.insert startFrom <$> findNamespaceDescendents startFrom
+  allNS <- S.insert startFrom <$> findNamespaceDescendents "pii" startFrom
   ModelTranslationState { mtsL2ToL1Map = nsmap } <- get
   -- Make a list of namespaces that actually have local imports to process...
   let
@@ -855,7 +866,7 @@ processInternalImports startFrom = do
                 then return (pending, finished)
                 else processInternalImports' (childNSID:stack) (S.delete childNSID pending) finished
             l2model <- getL2Model
-            childNSC <- getNamespaceContents childNSID
+            childNSC <- getNamespaceContents "internal imports - child NS" childNSID
             importSyms <- importListFromWhatAndHiding childNSID l2model what hiding
             forM_ importSyms $ \(L1.L1Identifier _ importSym) -> do
               -- TODO - check importSym doesn't already exist in curNSID.
@@ -899,16 +910,16 @@ translateNSContents scope thisNSID nsc =
         -- Imports are already done.
         return ()
       L1.L1NSNamespace { L1.l1nsNamespaceName = nsNameL1@(L1.L1Identifier idss nsName) } -> do
-        l2nsc <- getNamespaceContents thisNSID
-        Just childNSID <- M.lookup nsName . L2.l2nsNamespaces <$> getNamespaceContents thisNSID
+        l2nsc <- getNamespaceContents "translateNSContents - namespace" thisNSID
+        let Just childNSID = (M.lookup nsName . L2.l2nsNamespaces) l2nsc
         Just (L1.L1NamespaceContents childNSC) <- (M.lookup childNSID . mtsL2ToL1Map) <$> get
         translateNSContents scope childNSID childNSC
         Just (L2.L2DomainReference _ tmpId) <-
-              M.lookup nsName . L2.l2nsDomains <$> getNamespaceContents thisNSID
+              M.lookup nsName . L2.l2nsDomains <$> getNamespaceContents "translateNSContents-nsdr" thisNSID
         labs <- (L2.L2DomainExpressionDisjointUnion idss . L2.L2LabelledDomains .
                    (\n -> [(L2.L2Label childNSID (fromIntegral i), L2.L2DomainExpressionProduct idss (L2.L2LabelledDomains [])) |
                         i <- [0..(L2.l2nsNextLabel n)]])) <$>
-                  getNamespaceContents childNSID
+                  getNamespaceContents "translateNSContents DU" childNSID
         modify $ \mts -> mts { mtsTempIDDomainType = M.insert tmpId labs
                                                               (mtsTempIDDomainType mts) }
         return ()
@@ -918,7 +929,7 @@ translateNSContents scope thisNSID nsc =
         Just domNSID <- findExactNamespace thisNSID ident
         domStatement <- translateDomainDefinition scope ss domNSID dd
         Just (L2.L2DomainReference _ tmpId) <-
-              M.lookup ident . L2.l2nsDomains <$> getNamespaceContents thisNSID
+              M.lookup ident . L2.l2nsDomains <$> getNamespaceContents "tnsc domref" thisNSID
         modify $ \mts -> mts { mtsTempIDDomainType = M.insert tmpId domStatement (mtsTempIDDomainType mts) }
         modifyNamespaceContents thisNSID $ \l2nsc -> l2nsc {
           L2.l2nsDomains = M.insert ident domStatement (L2.l2nsDomains l2nsc)
@@ -929,14 +940,14 @@ translateNSContents scope thisNSID nsc =
       L1.L1NSNamedValue { L1.l1nsSS = ss, L1.l1nsValueName = L1.L1Identifier { L1.l1IdBS = n },
                           L1.l1nsDomainType = mt } -> do
         l2t <- maybe (return Nothing) (\t -> Just <$> translateDomainExpression scope ss thisNSID t) mt
-        Just valueID <- M.lookup n . L2.l2nsNamedValues <$> getNamespaceContents thisNSID
+        Just valueID <- M.lookup n . L2.l2nsNamedValues <$> getNamespaceContents "tnsc nv" thisNSID
         modifyL2Model $ \mod -> mod {
           L2.l2AllValues = M.insert valueID (L2.L2ValueContents ss l2t) (L2.l2AllValues mod)
           }
       L1.L1NSClass { L1.l1nsSS = ss, L1.l1nsClassName = L1.L1Identifier _ n,
                      L1.l1nsClassParameters = p,
                      L1.l1nsClassDomainFunctions = df, L1.l1nsClassValues = cvs } -> do
-        Just classID <- M.lookup n . L2.l2nsClasses <$> getNamespaceContents thisNSID
+        Just classID <- M.lookup n . L2.l2nsClasses <$> getNamespaceContents "tnsc c" thisNSID
         Just classContents <- (M.lookup classID . L2.l2AllClasses) <$> getL2Model
         let scope' = scope { siDomainIDMap = foldl' (\m ((l1id, _), (l2id, _)) ->
                                                       M.insert l1id l2id m) (siDomainIDMap scope) (zip p (L2.l2ClassParameters classContents))}
@@ -950,7 +961,7 @@ translateNSContents scope thisNSID nsc =
       L1.L1NSEnsemble {} -> return ()
       L1.L1NSUnit { L1.l1nsSS = ss, L1.l1nsUnitName = L1.L1Identifier uss n, L1.l1nsUnitDefinition = d } -> do
         l2uDef <- translateUnitDefinition scope ss thisNSID d
-        Just (L2.L2UnitExRef _ tmpId) <- M.lookup n . L2.l2nsUnits <$> getNamespaceContents thisNSID
+        Just (L2.L2UnitExRef _ tmpId) <- M.lookup n . L2.l2nsUnits <$> getNamespaceContents "tnsc u" thisNSID
         modify $ \mts -> mts { mtsTempIDUnitEx = M.insert tmpId l2uDef (mtsTempIDUnitEx mts) }
         modifyNamespaceContents thisNSID $ \l2nsc -> l2nsc {
             L2.l2nsUnits = M.insert n l2uDef (L2.l2nsUnits l2nsc)
@@ -1302,7 +1313,7 @@ fixAliasReferences nsid = do
 replaceTempDomainEx :: M.Map L2.L2DomainID L2.L2DomainExpression -> L2.L2DomainExpression -> L2.L2DomainExpression
 replaceTempDomainEx mSubst (L2.L2DomainReference ss tmpId)
   | Just domainType <- M.lookup tmpId mSubst = domainType
-replaceDomainEx _ x = x
+replaceTempDomainEx _ x = x
 
 -- | Replaces a temporary unit ID reference with the expression it resolves to.
 replaceTempUnitEx :: M.Map L2.L2BaseUnitsID L2.L2UnitExpression -> L2.L2UnitExpression -> L2.L2UnitExpression
@@ -1356,11 +1367,11 @@ nsidToFriendlyName context target
   | otherwise = do
     n <- BSC.unpack <$>
            (fromMaybe "anonymous namespace" <$> (nsidToFriendlyName' context target))
-    nsc <- getNamespaceContents target
+    nsc <- getNamespaceContents "friendlyname" target
     return $ n ++ (" at " ++ show (L2.l2nsSrcSpan nsc))
 
 nsidToFriendlyName' context target = do
-  allNS <- (M.toList . L2.l2nsNamespaces) <$> getNamespaceContents context
+  allNS <- (M.toList . L2.l2nsNamespaces) <$> getNamespaceContents "friendlyname'" context
   foldM (\m (nsname, nsid) -> (liftM (mplus m)) (if nsid == target
                                            then return (Just nsname)
                                            else (liftM $ ((nsname <> "::") <>)) <$>
@@ -1377,8 +1388,13 @@ modifyL2Model :: (L2.L2Model -> L2.L2Model) -> ModelTranslation ()
 modifyL2Model f = modify $ \mts -> mts { mtsL2Model = f (mtsL2Model mts) }
 
 -- | Fetch the contents of a namespace using the namespace ID.
-getNamespaceContents :: L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceContents
-getNamespaceContents nsid = (fromJust . M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+getNamespaceContents :: String -> L2.L2NamespaceID -> ModelTranslation L2.L2NamespaceContents
+getNamespaceContents strWhy nsid = do
+  maybeNS <- (M.lookup nsid . L2.l2AllNamespaces) <$> getL2Model
+  case maybeNS of
+    Nothing -> error $ "Internal Compiler Error: Can't find namespace ID " ++ show nsid ++ " in model for "
+                        ++ strWhy
+    Just v -> return v
 
 -- | Modify the contents of a namespace using namespace ID.
 modifyNamespaceContents :: L2.L2NamespaceID -> (L2.L2NamespaceContents -> L2.L2NamespaceContents) -> ModelTranslation ()
@@ -1523,13 +1539,13 @@ setScopedDomainName bs (L2.L2ScopedDomainID _ suid) = L2.L2ScopedDomainID bs sui
 
 -- | Find all distinct namespace IDs that are children of a given namespace.
 --   Note that namespaces that are children by virtue of an import are excluded.
-findNamespaceDescendents :: L2.L2NamespaceID -> ModelTranslation (S.Set L2.L2NamespaceID)
-findNamespaceDescendents nsid = do
-  nsc <- getNamespaceContents nsid
+findNamespaceDescendents :: String -> L2.L2NamespaceID -> ModelTranslation (S.Set L2.L2NamespaceID)
+findNamespaceDescendents why nsid = do
+  nsc <- getNamespaceContents "getdescendents - self" nsid
   trueChildren <- 
-    filterM (\childNS -> ((==nsid) . L2.l2nsParent) <$> getNamespaceContents childNS) $
+    filterM (\childNS -> ((==nsid) . L2.l2nsParent) <$> getNamespaceContents ("descendents - child of " ++ show nsid ++ " - " ++ why) childNS) $
       M.elems (L2.l2nsNamespaces nsc)
-  descs1 <- S.unions <$> mapM findNamespaceDescendents trueChildren
+  descs1 <- S.unions <$> mapM (findNamespaceDescendents (why++"(C)")) trueChildren
   return $ descs1 `S.union` (S.fromList trueChildren)
 
 -- | Finds a namespace in a Level 2 model, treating a particular namespace as root and applying a level 1 namespace path. Fails with an error if the

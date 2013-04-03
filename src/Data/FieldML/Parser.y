@@ -154,11 +154,11 @@ whereNamespaceContents : Where namespaceContents { $2 }
 
 relOrAbsPath : Slash relPath0 { L1RelOrAbsPath (twoPosToSpan (alexPosToSrcPoint $1) (l1RelPathSS $2)) True $2 }
              | relPath { L1RelOrAbsPath (l1RelPathSS $1) False $1 }
-relPath0 : {- empty -} {% do
-                           (pos, _, _) <- alexGetInput                        
-                           return $ L1RelPath (alexPosToSrcPoint pos) []
-                       }
-  | PathSep sepBy1(identifier, PathSep) %prec highestSep { L1RelPath (twoPosToSpan (alexPosToSrcPoint $1) (l1IdSS (last $2))) $2 }
+relPath0 : PathSep sepBy1(identifier, PathSep) %prec highestSep { L1RelPath (twoPosToSpan (alexPosToSrcPoint $1) (l1IdSS (last $2))) $2 } |
+  {- empty -} %prec lowerSep {% do
+                                 (pos, _, _) <- alexGetInput
+                                 return $ L1RelPath (alexPosToSrcPoint pos) []
+                             }
 relPath : sepBy1(identifier,PathSep) { L1RelPath (twoPosToSpan (l1IdSS $ head $1) (l1IdSS $ last $1)) $1 }
 
 relOrAbsPathPossiblyIntEnd

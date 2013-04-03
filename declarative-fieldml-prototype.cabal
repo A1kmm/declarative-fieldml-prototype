@@ -37,4 +37,4 @@ executable runfieldml
    hs-source-dirs: runfieldml
    main-is: RunFieldML.hs
    build-depends: cmdargs >= 0.5, declarative-fieldml-prototype, base >= 3 && <5, monads-tf
-   ghc-prof-options: -auto-all -caf-all
+   ghc-prof-options: -auto-all -caf-all -rtsopts

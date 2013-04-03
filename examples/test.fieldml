@@ -2,10 +2,10 @@ namespace     myns where
   namespace testing where
     namespace myns where
     namespace xns where
-      import from "test2" / (yourns, multiimportns) as somens
+      import from "test2.fieldml" / (yourns, multiimportns) as somens
       namespace anothertop where
-      my x::R
-      my y
+      val x::R
+      val y
       let == (+ x y) R::1
       ensemble {a,  b, c} as e
       domain d1 = (e::a: I | e::b: R[dimensionless] | e::c: R[metre])
